@@ -13,6 +13,7 @@ from futures_scalp_analyzer.price_feed import (
     SchwabQuotePriceFeed,
     normalize_root_symbol,
 )
+from futures_scalp_analyzer.risk import evaluate_session_status
 from futures_scalp_analyzer.service import analyze_request
 
 
@@ -89,22 +90,28 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
             "source": "price_feed",
         }
 
-    @app.post("/futures/analyze")
+    @app.get("/futures/session")
+    async def session_status(
+        account_size: int,
+        losses_today: int,
+        pnl_today: float,
+    ) -> dict[str, Any]:
+        session = evaluate_session_status(account_size, losses_today, pnl_today)
+        return {
+            "can_trade": session["can_trade"],
+            "reason": session["reason"],
+            "trades_remaining": session["trades_remaining"],
+            "dollars_to_target": session["dollars_to_target"],
+            "dollars_to_limit": session["dollars_to_limit"],
+            "session_status": session["session_status"],
+        }
+
+    @app.post("/futures/analyze", response_model=FuturesScalpAnalysisResponse)
     async def analyze(
         request: FuturesScalpIdeaRequest,
         feed: PriceFeed = Depends(get_price_feed),
-    ) -> dict[str, Any]:
-        response = await analyze_request(request, feed)
-        payload = response.model_dump(mode="json")
-        active_contract = None
-        if isinstance(feed, SchwabQuotePriceFeed):
-            active_contract = await asyncio.to_thread(feed.get_active_contract, request.symbol)
-        else:
-            root_symbol = normalize_root_symbol(request.symbol)
-            if root_symbol is not None:
-                active_contract = FALLBACK_ACTIVE_CONTRACTS.get(root_symbol)
-        payload["active_contract"] = active_contract
-        return payload
+    ) -> FuturesScalpAnalysisResponse:
+        return await analyze_request(request, feed)
 
     @app.post("/futures/position", response_model=FuturesScalpAnalysisResponse)
     async def position(

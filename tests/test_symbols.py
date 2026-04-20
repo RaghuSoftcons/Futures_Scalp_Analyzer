@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from futures_scalp_analyzer.models import FuturesScalpIdeaRequest
-from futures_scalp_analyzer.price_feed import StaticPriceFeed
+from futures_scalp_analyzer.price_feed import FALLBACK_ACTIVE_CONTRACTS, StaticPriceFeed, normalize_root_symbol
 from futures_scalp_analyzer.service import analyze_request
 from futures_scalp_analyzer.symbols import SUPPORTED_SYMBOLS
 
@@ -26,6 +26,18 @@ def test_zb_has_no_micro_counterpart():
     assert "MZB" not in SUPPORTED_SYMBOLS
 
 
+def test_symbol_normalization_variants():
+    assert normalize_root_symbol("ES") == "/ES"
+    assert normalize_root_symbol("/ES") == "/ES"
+    assert normalize_root_symbol("es") == "/ES"
+
+
+def test_fallback_active_contracts_cover_all_supported_symbols():
+    assert len(FALLBACK_ACTIVE_CONTRACTS) == 12
+    for root_symbol in ("/ES", "/NQ", "/GC", "/CL", "/SI", "/ZB", "/UB", "/MNQ", "/MES", "/MCL", "/MGC", "/SIL"):
+        assert root_symbol in FALLBACK_ACTIVE_CONTRACTS
+
+
 def test_mnq_risk_calculation_within_50k_limit():
     request = FuturesScalpIdeaRequest(
         symbol="MNQ",
@@ -46,6 +58,7 @@ def test_mnq_risk_calculation_within_50k_limit():
     assert response.risk_per_contract == 100.0
     assert response.per_trade_risk_limit == 100.0
     assert response.risk_rule_violations.per_trade_risk_exceeds_limit is False
+    assert response.verdict in {"GO", "WAIT", "NO GO"}
 
 
 def test_nq_risk_calculation_within_50k_limit():

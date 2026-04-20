@@ -90,6 +90,7 @@ def test_unavailable_when_live_price_missing():
 def test_account_scaling_templates():
     assert get_account_risk_template(100000) == {
         "account_size": 100000,
+        "daily_loss_limit": 600.0,
         "per_trade_risk": 200.0,
         "per_trade_target": 400.0,
         "daily_profit_target": 1200.0,

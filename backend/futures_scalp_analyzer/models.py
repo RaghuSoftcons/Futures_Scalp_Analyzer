@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 SupportedSymbol = Literal["NQ", "ES", "CL", "GC", "SI", "ZB", "UB", "MNQ", "MES", "MCL", "MGC", "SIL"]
@@ -24,22 +24,26 @@ class OpenPosition(BaseModel):
 
 
 class FuturesScalpIdeaRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     symbol: SupportedSymbol
-    side: TradeSide
-    entry_price: float = Field(gt=0)
-    stop_price: float = Field(gt=0)
-    target_price: float = Field(gt=0)
-    contracts: int = Field(ge=1)
+    side: TradeSide = Field(validation_alias=AliasChoices("side", "direction"))
+    entry_price: float | None = Field(default=None, gt=0)
+    stop_price: float | None = Field(default=None, gt=0)
+    target_price: float | None = Field(default=None, gt=0)
+    contracts: int = Field(default=1, ge=1)
     account_size: Literal[50000, 100000, 150000, 250000]
-    mode: TradeMode
-    session: TradeSession
-    realized_pnl_today: float = 0.0
-    realized_loss_count_today: int = Field(ge=0)
+    mode: TradeMode = "idea_eval"
+    session: TradeSession = "RTH"
+    realized_pnl_today: float = Field(default=0.0, validation_alias=AliasChoices("realized_pnl_today", "pnl_today"))
+    realized_loss_count_today: int = Field(default=0, ge=0, validation_alias=AliasChoices("realized_loss_count_today", "losses_today"))
     open_positions: list[OpenPosition] = Field(default_factory=list)
 
     @field_validator("stop_price")
     @classmethod
-    def validate_stop_side(cls, value: float, info) -> float:
+    def validate_stop_side(cls, value: float | None, info) -> float | None:
+        if value is None:
+            return value
         entry_price = info.data.get("entry_price")
         side = info.data.get("side")
         if entry_price is None or side is None:
@@ -52,7 +56,9 @@ class FuturesScalpIdeaRequest(BaseModel):
 
     @field_validator("target_price")
     @classmethod
-    def validate_target_side(cls, value: float, info) -> float:
+    def validate_target_side(cls, value: float | None, info) -> float | None:
+        if value is None:
+            return value
         entry_price = info.data.get("entry_price")
         side = info.data.get("side")
         if entry_price is None or side is None:
@@ -73,6 +79,7 @@ class RiskRuleViolations(BaseModel):
 class FuturesScalpAnalysisResponse(BaseModel):
     symbol: str
     side: str
+    direction: str
     entry_price: float
     stop_price: float
     target_price: float
@@ -92,8 +99,19 @@ class FuturesScalpAnalysisResponse(BaseModel):
     realized_pnl_today: float
     realized_loss_count_today: int
     daily_profit_target: float
+    daily_loss_limit: float
     per_trade_risk_limit: float
     per_trade_profit_target: float
+    active_contract: str | None = None
+    verdict: str
+    entry_zone: str
+    stop_loss: str
+    target: str
+    rr_ratio_display: str
+    why: str
+    watch_out_for: str
+    account_summary: str
+    session_status: str
     final_recommendation: Recommendation
     final_recommendation_comment: str
     as_of: datetime
