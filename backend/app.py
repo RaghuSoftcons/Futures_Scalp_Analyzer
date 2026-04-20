@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime
 import logging
 import os
@@ -55,16 +56,30 @@ def _refresh_quote_access_token() -> bool:
     if not all([_QUOTE_REFRESH_TOKEN, _QUOTE_CLIENT_ID, _QUOTE_CLIENT_SECRET]):
         return False
 
+    credentials = base64.b64encode(
+        f"{_QUOTE_CLIENT_ID}:{_QUOTE_CLIENT_SECRET}".encode()
+    ).decode()
+
     response = httpx.post(
         SCHWAB_TOKEN_URL,
+        headers={
+            "Authorization": f"Basic {credentials}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
         data={
             "grant_type": "refresh_token",
             "refresh_token": _QUOTE_REFRESH_TOKEN,
-            "client_id": _QUOTE_CLIENT_ID,
-            "client_secret": _QUOTE_CLIENT_SECRET,
         },
         timeout=10.0,
     )
+    try:
+        LOGGER.info(
+            "Schwab token refresh status=%s body=%s",
+            response.status_code,
+            response.text,
+        )
+    except Exception:
+        LOGGER.exception("Failed to log Schwab token refresh response")
     if response.status_code >= 400:
         return False
 

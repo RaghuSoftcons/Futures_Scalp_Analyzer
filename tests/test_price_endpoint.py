@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib
 
 import httpx
@@ -91,8 +92,12 @@ def test_price_endpoint_refreshes_on_401(monkeypatch):
             },
         )
 
-    def fake_post(url, data, timeout):
+    def fake_post(url, headers, data, timeout):
+        expected_credentials = base64.b64encode(b"client-id:client-secret").decode()
+        assert headers["Authorization"] == f"Basic {expected_credentials}"
+        assert headers["Content-Type"] == "application/x-www-form-urlencoded"
         assert data["grant_type"] == "refresh_token"
+        assert data["refresh_token"] == "refresh-token"
         return MockResponse(200, {"access_token": "refreshed-token"})
 
     monkeypatch.setattr(module.httpx, "get", fake_get)
