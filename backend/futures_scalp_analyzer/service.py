@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
@@ -184,7 +185,7 @@ def _build_gpt_fields(
 async def analyze_request(
     request: FuturesScalpIdeaRequest,
     price_feed: PriceFeed,
-) -> FuturesScalpAnalysisResponse:
+) -> FuturesScalpAnalysisResponse | dict[str, Any]:
     spec = SUPPORTED_SYMBOLS[request.symbol]
     risk_template = get_account_risk_template(request.account_size)
     session_state = evaluate_session_status(
@@ -260,7 +261,26 @@ async def analyze_request(
             as_of=datetime.now(timezone.utc),
         )
 
-    live_price = await price_feed.get_live_price(request.symbol)
+    try:
+        live_price = await asyncio.wait_for(price_feed.get_live_price(request.symbol), timeout=10.0)
+    except asyncio.TimeoutError:
+        entry_price, stop_price, target_price = _resolve_trade_levels(request, spec, risk_template, None)
+        return {
+            "error": "price_feed_timeout",
+            "detail": f"Timed out fetching live price for {request.symbol} after 10 seconds.",
+            "symbol": request.symbol,
+            "side": request.side,
+            "mode": request.mode,
+            "active_contract": active_contract,
+            "entry_price": entry_price,
+            "stop_price": stop_price,
+            "target_price": target_price,
+            "contracts": request.contracts,
+            "session_status": str(session_state["session_status"]),
+            "final_recommendation": "unavailable",
+            "final_recommendation_comment": "Live Schwab quote timed out. Retry shortly.",
+            "as_of": datetime.now(timezone.utc).isoformat(),
+        }
     entry_price, stop_price, target_price = _resolve_trade_levels(request, spec, risk_template, live_price)
     risk_points = _risk_points(entry_price, stop_price)
     reward_points = _reward_points(entry_price, target_price)

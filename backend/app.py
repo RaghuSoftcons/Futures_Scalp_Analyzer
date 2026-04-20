@@ -5,6 +5,7 @@ import asyncio
 from typing import Any
 
 from fastapi import Depends, FastAPI
+from fastapi.responses import JSONResponse
 from futures_scalp_analyzer.models import FuturesScalpAnalysisResponse, FuturesScalpIdeaRequest
 from futures_scalp_analyzer.price_feed import (
     FALLBACK_ACTIVE_CONTRACTS,
@@ -106,20 +107,42 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
             "session_status": session["session_status"],
         }
 
-    @app.post("/futures/analyze", response_model=FuturesScalpAnalysisResponse)
+    @app.post("/futures/analyze")
     async def analyze(
         request: FuturesScalpIdeaRequest,
         feed: PriceFeed = Depends(get_price_feed),
-    ) -> FuturesScalpAnalysisResponse:
-        return await analyze_request(request, feed)
+    ) -> FuturesScalpAnalysisResponse | JSONResponse:
+        try:
+            return await analyze_request(request, feed)
+        except Exception as e:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "error": "analysis_failed",
+                    "detail": str(e),
+                    "symbol": request.symbol,
+                    "side": request.side,
+                },
+            )
 
-    @app.post("/futures/position", response_model=FuturesScalpAnalysisResponse)
+    @app.post("/futures/position")
     async def position(
         request: FuturesScalpIdeaRequest,
         feed: PriceFeed = Depends(get_price_feed),
-    ) -> FuturesScalpAnalysisResponse:
-        position_request = request.model_copy(update={"mode": "position_mgmt"})
-        return await analyze_request(position_request, feed)
+    ) -> FuturesScalpAnalysisResponse | JSONResponse:
+        try:
+            position_request = request.model_copy(update={"mode": "position_mgmt"})
+            return await analyze_request(position_request, feed)
+        except Exception as e:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "error": "analysis_failed",
+                    "detail": str(e),
+                    "symbol": request.symbol,
+                    "side": request.side,
+                },
+            )
 
     @app.get("/privacy")
     async def privacy_policy():
