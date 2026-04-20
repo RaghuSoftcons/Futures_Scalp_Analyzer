@@ -3,8 +3,10 @@
 ## GPT Identity
 - Name: Futures Scalp Advisor
 - Description: Live futures scalp trade advisor using Schwab real-time prices and prop firm rules
-- Status: Draft (not yet published)
+- Status: Live - Anyone with the link
+- Share URL: https://chatgpt.com/g/g-69e688e3c80c81918d8fdb3e56d6f151
 - Action URL: https://futuresscalpanalyzer-production.up.railway.app
+- Privacy Policy URL: https://futuresscalpanalyzer-production.up.railway.app/privacy
 - Capabilities: Web Search ON, Canvas ON, Image Generation ON, Code Interpreter OFF
 - Conversation Starters:
   - Check ES long on my 50K account, 0 losses today
