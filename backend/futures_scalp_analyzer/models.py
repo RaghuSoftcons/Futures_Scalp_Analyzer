@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
-SupportedSymbol = Literal["NQ", "ES", "CL", "GC", "SI", "ZB", "UB"]
+SupportedSymbol = Literal["NQ", "ES", "CL", "GC", "SI", "ZB", "UB", "MNQ", "MES", "MCL", "MGC", "SIL"]
 TradeSide = Literal["long", "short"]
 TradeMode = Literal["idea_eval", "position_mgmt"]
 TradeSession = Literal["RTH", "ETH"]
@@ -97,4 +97,3 @@ class FuturesScalpAnalysisResponse(BaseModel):
     final_recommendation: Recommendation
     final_recommendation_comment: str
     as_of: datetime
-

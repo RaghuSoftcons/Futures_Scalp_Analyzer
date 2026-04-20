@@ -20,14 +20,6 @@ def _reward_points(request: FuturesScalpIdeaRequest) -> float:
     return abs(request.target_price - request.entry_price)
 
 
-def _price_advantage_points(request: FuturesScalpIdeaRequest, live_price: float | None) -> float | None:
-    if live_price is None:
-        return None
-    if request.side == "long":
-        return request.entry_price - live_price
-    return live_price - request.entry_price
-
-
 def _distance_entry_to_live(request: FuturesScalpIdeaRequest, live_price: float | None) -> float | None:
     if live_price is None:
         return None
@@ -35,34 +27,35 @@ def _distance_entry_to_live(request: FuturesScalpIdeaRequest, live_price: float 
 
 
 def _pricing_percentage_difference(request: FuturesScalpIdeaRequest, live_price: float | None) -> float:
-    risk_points = _risk_points(request)
-    if live_price is None or risk_points == 0:
+    if live_price is None or live_price == 0:
         return 0.0
-    return abs(live_price - request.entry_price) / risk_points * 100.0
+    return abs((request.entry_price - live_price) / live_price) * 100.0
 
 
 def _entry_verdict(request: FuturesScalpIdeaRequest, live_price: float | None) -> str:
     if live_price is None:
         return "unavailable"
-    advantage = _price_advantage_points(request, live_price)
     pricing_diff = _pricing_percentage_difference(request, live_price)
-    if advantage is not None and advantage > 0:
+    is_attractive = (
+        request.side == "long" and request.entry_price <= live_price
+    ) or (
+        request.side == "short" and request.entry_price >= live_price
+    )
+    if is_attractive and pricing_diff <= 0.1:
         return "attractive"
-    if pricing_diff < 5:
+    if pricing_diff <= 0.5:
         return "fair"
     return "rich"
 
 
-def _trade_verdict(rr_ratio: float, atr_multiple_risk: float, liquidity_score: str) -> str:
+def _trade_verdict(rr_ratio: float, violations: dict[str, bool]) -> str:
     if rr_ratio <= 0:
         return "unavailable"
-    if rr_ratio < 1.0:
+    if any(violations.values()):
         return "avoid"
-    if rr_ratio >= 2.0 and atr_multiple_risk <= 0.35 and liquidity_score in {"good", "acceptable"}:
+    if rr_ratio >= 2.0:
         return "favorable"
-    if rr_ratio >= 1.5 and liquidity_score in {"good", "acceptable"}:
-        return "favorable"
-    if rr_ratio >= 1.2:
+    if rr_ratio >= 1.5:
         return "neutral"
     return "speculative"
 
@@ -113,7 +106,7 @@ async def analyze_request(
         "mode": request.mode,
         "live_price": live_price,
         "entry_verdict": _entry_verdict(request, live_price),
-        "trade_verdict": _trade_verdict(rr_ratio, atr_multiple_risk, spec.liquidity_score) if live_price is not None else "unavailable",
+        "trade_verdict": _trade_verdict(rr_ratio, violations) if live_price is not None else "unavailable",
         "liquidity_score": spec.liquidity_score,
         "rr_ratio": rr_ratio,
         "pricing_percentage_difference": _pricing_percentage_difference(request, live_price),
