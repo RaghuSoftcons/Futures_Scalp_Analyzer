@@ -123,6 +123,16 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
         position_request = request.model_copy(update={"mode": "position_mgmt"})
         return await analyze_request(position_request, feed)
 
+            @app.get("/privacy")
+        async def privacy_policy():
+            return {
+                "service": "Futures Scalp Analyzer",
+                "description": "This API provides live futures price data and scalp trade analysis for personal use only. No user data is collected or stored.",
+                "data_collected": "None",
+                "contact": "For questions, contact the account owner via ChatGPT.",
+                "usage": "This service is for personal trading analysis only and does not provide financial advice."
+            }
+
     return app
 
 
