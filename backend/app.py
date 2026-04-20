@@ -1,12 +1,10 @@
 """FastAPI application for the standalone futures scalp analyzer."""
-
 from __future__ import annotations
 
 import asyncio
 from typing import Any
 
 from fastapi import Depends, FastAPI
-
 from futures_scalp_analyzer.models import FuturesScalpAnalysisResponse, FuturesScalpIdeaRequest
 from futures_scalp_analyzer.price_feed import (
     FALLBACK_ACTIVE_CONTRACTS,
@@ -35,7 +33,6 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
     ) -> list[dict[str, str | None]]:
         if isinstance(feed, SchwabQuotePriceFeed):
             return await asyncio.to_thread(feed.list_active_contracts)
-
         return [
             {
                 "root": root,
@@ -59,7 +56,6 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
                 "error": "unsupported_symbol",
                 "detail": f"Unsupported symbol: {normalized_symbol}",
             }
-
         if isinstance(feed, SchwabQuotePriceFeed):
             quote_details = await asyncio.to_thread(feed.get_quote_details, symbol)
             if quote_details is None:
@@ -68,11 +64,9 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
                     "error": "quote_unavailable",
                     "detail": f"Unable to fetch Schwab quote for {root_symbol}",
                 }
-
             price = quote_details.get("last")
             if price is None:
                 price = quote_details.get("mark")
-
             return {
                 "symbol": normalized_symbol,
                 "root": root_symbol,
@@ -86,7 +80,6 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
                 "timestamp": quote_details.get("timestamp"),
                 "token_refreshed": quote_details.get("token_refreshed", False),
             }
-
         live_price = await feed.get_live_price(normalized_symbol)
         return {
             "symbol": normalized_symbol,
@@ -103,7 +96,6 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         response = await analyze_request(request, feed)
         payload = response.model_dump(mode="json")
-
         active_contract = None
         if isinstance(feed, SchwabQuotePriceFeed):
             active_contract = await asyncio.to_thread(feed.get_active_contract, request.symbol)
@@ -111,7 +103,6 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
             root_symbol = normalize_root_symbol(request.symbol)
             if root_symbol is not None:
                 active_contract = FALLBACK_ACTIVE_CONTRACTS.get(root_symbol)
-
         payload["active_contract"] = active_contract
         return payload
 
@@ -123,15 +114,15 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
         position_request = request.model_copy(update={"mode": "position_mgmt"})
         return await analyze_request(position_request, feed)
 
-            @app.get("/privacy")
-        async def privacy_policy():
-            return {
-                "service": "Futures Scalp Analyzer",
-                "description": "This API provides live futures price data and scalp trade analysis for personal use only. No user data is collected or stored.",
-                "data_collected": "None",
-                "contact": "For questions, contact the account owner via ChatGPT.",
-                "usage": "This service is for personal trading analysis only and does not provide financial advice."
-            }
+    @app.get("/privacy")
+    async def privacy_policy():
+        return {
+            "service": "Futures Scalp Analyzer",
+            "description": "This API provides live futures price data and scalp trade analysis for personal use only. No user data is collected or stored.",
+            "data_collected": "None",
+            "contact": "For questions, contact the account owner via ChatGPT.",
+            "usage": "This service is for personal trading analysis only and does not provide financial advice."
+        }
 
     return app
 
