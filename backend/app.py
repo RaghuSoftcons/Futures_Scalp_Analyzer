@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import logging
 import os
 from typing import Any, Mapping
+import urllib.parse
 
 import httpx
 from fastapi import Depends, FastAPI
@@ -40,8 +41,9 @@ _QUOTE_CLIENT_SECRET = os.getenv("SCHWAB_CLIENT_SECRET")
 
 
 def _fetch_quote_response(schwab_symbol: str, access_token: str | None) -> httpx.Response:
+    encoded_symbol = urllib.parse.quote(schwab_symbol, safe="")
     return httpx.get(
-        f"{SCHWAB_API_BASE_URL}/marketdata/v1/quotes{schwab_symbol}",
+        f"{SCHWAB_API_BASE_URL}/marketdata/v1/quotes?symbols={encoded_symbol}",
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=10.0,
     )

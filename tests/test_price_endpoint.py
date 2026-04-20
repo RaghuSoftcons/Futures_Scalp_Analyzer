@@ -29,7 +29,7 @@ def test_price_endpoint_returns_quote(monkeypatch):
     module = _reload_app_module(monkeypatch)
 
     def fake_get(url, headers, timeout):
-        assert url.endswith("/marketdata/v1/quotes/ESM26")
+        assert url.endswith("/marketdata/v1/quotes?symbols=%2FESM26")
         assert headers["Authorization"] == "Bearer access-token"
         return MockResponse(
             200,
@@ -71,8 +71,10 @@ def test_price_endpoint_refreshes_on_401(monkeypatch):
     def fake_get(url, headers, timeout):
         quote_calls["count"] += 1
         if quote_calls["count"] == 1:
+            assert url.endswith("/marketdata/v1/quotes?symbols=%2FNQM26")
             assert headers["Authorization"] == "Bearer access-token"
             return MockResponse(401, {})
+        assert url.endswith("/marketdata/v1/quotes?symbols=%2FNQM26")
         assert headers["Authorization"] == "Bearer refreshed-token"
         return MockResponse(
             200,
