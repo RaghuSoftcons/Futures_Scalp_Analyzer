@@ -1,0 +1,20 @@
+[project]
+name = "futures-scalp-analyzer"
+version = "0.1.0"
+description = "Standalone futures scalp analyzer service"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.116,<1.0",
+  "pydantic>=2.8,<3.0",
+  "uvicorn>=0.30,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2,<9.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["backend"]
+addopts = "-p no:cacheprovider"
