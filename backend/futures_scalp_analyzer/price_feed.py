@@ -1,18 +1,70 @@
 """Read-only live price abstraction for Schwab quote access."""
+
 from __future__ import annotations
 
 import asyncio
 import base64
 from abc import ABC, abstractmethod
+from datetime import UTC, datetime, timedelta
 import logging
 import os
 from typing import Any, Mapping
+import urllib.parse
 
 import httpx
 
 from .symbols import SUPPORTED_SYMBOLS
 
 LOGGER = logging.getLogger(__name__)
+
+ROOT_DISPLAY_NAMES: dict[str, str] = {
+    "/ES": "E-Mini S&P 500",
+    "/NQ": "E-Mini Nasdaq 100",
+    "/GC": "Gold",
+    "/CL": "Crude Oil",
+    "/SI": "Silver",
+    "/ZB": "30Y T-Bond",
+    "/UB": "Ultra T-Bond",
+    "/MNQ": "Micro Nasdaq",
+    "/MES": "Micro S&P",
+    "/MCL": "Micro Crude",
+    "/MGC": "Micro Gold",
+    "/SIL": "Micro Silver",
+}
+
+FALLBACK_ACTIVE_CONTRACTS: dict[str, str] = {
+    "/ES": "/ESM26",
+    "/NQ": "/NQM26",
+    "/GC": "/GCM26",
+    "/CL": "/CLK26",
+    "/SI": "/SIM26",
+    "/ZB": "/ZBM26",
+    "/UB": "/UBM26",
+    "/MNQ": "/MNQM26",
+    "/MES": "/MESM26",
+    "/MCL": "/MCLK26",
+    "/MGC": "/MGCM26",
+    "/SIL": "/SILM26",
+}
+
+ROOT_SYMBOLS: tuple[str, ...] = tuple(FALLBACK_ACTIVE_CONTRACTS.keys())
+ACTIVE_CONTRACT_CACHE_TTL = timedelta(hours=24)
+
+
+def normalize_root_symbol(symbol: str) -> str | None:
+    """Normalize user-facing symbols like ES or /ES into the root futures symbol."""
+    normalized = symbol.strip().upper()
+    if not normalized:
+        return None
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+    if normalized in FALLBACK_ACTIVE_CONTRACTS:
+        return normalized
+    short_symbol = normalized.removeprefix("/")
+    spec = SUPPORTED_SYMBOLS.get(short_symbol)
+    if spec is not None:
+        return spec.schwab_symbol.upper()
+    return None
 
 
 class PriceFeed(ABC):
@@ -33,6 +85,86 @@ class StaticPriceFeed(PriceFeed):
         return self._prices.get(symbol.upper())
 
 
+class ActiveContractResolver:
+    """
+    Resolve front-month futures contracts from Schwab root symbols.
+
+    The resolver keeps an in-memory cache that is refreshed on startup, every
+    24 hours, and immediately when a contract quote returns 404.
+    """
+
+    def __init__(self, client: "SchwabQuotePriceFeed") -> None:
+        self._client = client
+        self._cache: dict[str, dict[str, str | None]] = {}
+        self._last_refresh_at: datetime | None = None
+        self.refresh(force=True)
+
+    def refresh(self, force: bool = False) -> dict[str, dict[str, str | None]]:
+        now = datetime.now(UTC)
+        if (
+            not force
+            and self._cache
+            and self._last_refresh_at is not None
+            and now - self._last_refresh_at < ACTIVE_CONTRACT_CACHE_TTL
+        ):
+            return self._cache
+
+        encoded_roots = ",".join(urllib.parse.quote(root, safe="") for root in ROOT_SYMBOLS)
+        try:
+            response, _ = self._client.fetch_json(
+                f"{self._client.api_base_url}/marketdata/v1/quotes?symbols={encoded_roots}"
+            )
+            if response is None:
+                raise RuntimeError("No response received from Schwab active-contract lookup")
+            if response.status_code >= 400:
+                raise RuntimeError(f"Schwab active-contract lookup returned {response.status_code}")
+
+            payload = response.json()
+            refreshed_cache: dict[str, dict[str, str | None]] = {}
+            for root in ROOT_SYMBOLS:
+                quote_payload = self._client.extract_quote_payload(payload, root)
+                active_contract = quote_payload.get("futureActiveSymbol") if quote_payload else None
+                expiration = quote_payload.get("futureExpirationDate") if quote_payload else None
+                refreshed_cache[root] = {
+                    "active_contract": str(active_contract) if active_contract else FALLBACK_ACTIVE_CONTRACTS[root],
+                    "expiration": str(expiration) if expiration else None,
+                }
+
+            self._cache = refreshed_cache
+            self._last_refresh_at = now
+            return self._cache
+        except Exception:
+            LOGGER.warning("Falling back to hardcoded active contract map", exc_info=True)
+            self._cache = {
+                root: {"active_contract": contract, "expiration": None}
+                for root, contract in FALLBACK_ACTIVE_CONTRACTS.items()
+            }
+            self._last_refresh_at = now
+            return self._cache
+
+    def get_active_contract(self, symbol: str, force_refresh: bool = False) -> str | None:
+        root = normalize_root_symbol(symbol)
+        if root is None:
+            return None
+        cache = self.refresh(force=force_refresh)
+        details = cache.get(root)
+        if details is None:
+            return FALLBACK_ACTIVE_CONTRACTS.get(root)
+        return details.get("active_contract") or FALLBACK_ACTIVE_CONTRACTS.get(root)
+
+    def list_contracts(self) -> list[dict[str, str | None]]:
+        cache = self.refresh(force=False)
+        return [
+            {
+                "root": root,
+                "active_contract": cache.get(root, {}).get("active_contract") or FALLBACK_ACTIVE_CONTRACTS[root],
+                "expiration": cache.get(root, {}).get("expiration"),
+                "display_name": ROOT_DISPLAY_NAMES.get(root, root),
+            }
+            for root in ROOT_SYMBOLS
+        ]
+
+
 class SchwabQuotePriceFeed(PriceFeed):
     """Read-only Schwab quote client with in-memory token refresh."""
 
@@ -41,75 +173,126 @@ class SchwabQuotePriceFeed(PriceFeed):
         self._refresh_token = os.getenv("SCHWAB_REFRESH_TOKEN")
         self._client_id = os.getenv("SCHWAB_CLIENT_ID")
         self._client_secret = os.getenv("SCHWAB_CLIENT_SECRET")
-        self._api_base_url = os.getenv("SCHWAB_API_BASE_URL", "https://api.schwabapi.com").rstrip("/")
+        self.api_base_url = os.getenv("SCHWAB_API_BASE_URL", "https://api.schwabapi.com").rstrip("/")
         self._token_url = os.getenv("SCHWAB_TOKEN_URL", "https://api.schwabapi.com/v1/oauth/token")
+        self._resolver = ActiveContractResolver(self)
 
     async def get_live_price(self, symbol: str) -> float | None:
         return await asyncio.to_thread(self.get_price, symbol)
 
     def get_price(self, symbol: str) -> float | None:
-        try:
-            spec = SUPPORTED_SYMBOLS[symbol.upper()]
-        except KeyError:
-            LOGGER.warning("Unsupported symbol requested from Schwab feed: %s", symbol)
+        quote_details = self.get_quote_details(symbol)
+        if not quote_details:
             return None
-        if not self._access_token:
-            LOGGER.warning("SCHWAB_ACCESS_TOKEN is not set; live price unavailable for %s", symbol)
-            return None
-        quote = self._fetch_quote(spec.schwab_symbol, self._access_token)
-        if quote is None:
-            return None
-        if quote.status_code == 401:
-            if not self._refresh_access_token():
-                LOGGER.warning("Schwab token refresh failed; live price unavailable for %s", symbol)
-                return None
-            quote = self._fetch_quote(spec.schwab_symbol, self._access_token)
-            if quote is None or quote.status_code == 401:
-                LOGGER.warning("Schwab quote retry failed after refresh for %s", symbol)
-                return None
-        if quote.status_code >= 400:
-            LOGGER.warning("Schwab quote request failed for %s with status %s", symbol, quote.status_code)
-            return None
-        try:
-            payload = quote.json()
-            quote_data = self._extract_quote_payload(payload, spec.schwab_symbol)
-            if quote_data is None:
-                return None
-            last_price = quote_data.get("lastPrice")
-            if last_price is not None:
-                return float(last_price)
-            mark = quote_data.get("mark")
-            if mark is not None:
-                return float(mark)
-        except Exception:
-            LOGGER.exception("Failed to parse Schwab quote payload for %s", symbol)
-            return None
+        last_price = quote_details.get("last")
+        if last_price is not None:
+            return float(last_price)
+        mark = quote_details.get("mark")
+        if mark is not None:
+            return float(mark)
         return None
 
-    def _fetch_quote(self, schwab_symbol: str, access_token: str | None) -> httpx.Response | None:
+    def get_active_contract(self, symbol: str) -> str | None:
+        return self._resolver.get_active_contract(symbol)
+
+    def list_active_contracts(self) -> list[dict[str, str | None]]:
+        return self._resolver.list_contracts()
+
+    def get_quote_details(self, symbol: str) -> dict[str, Any] | None:
+        root_symbol = normalize_root_symbol(symbol)
+        if root_symbol is None:
+            LOGGER.warning("Unsupported symbol requested from Schwab feed: %s", symbol)
+            return None
+
+        active_contract = self._resolver.get_active_contract(root_symbol)
+        if active_contract is None:
+            LOGGER.warning("No active contract available for %s", root_symbol)
+            return None
+
+        response, token_refreshed = self.fetch_quote_response(active_contract)
+        if response is not None and response.status_code == 404:
+            # A 404 usually means the cached contract rolled, so refresh the
+            # active-contract cache immediately and retry with the new mapping.
+            self._resolver.refresh(force=True)
+            active_contract = self._resolver.get_active_contract(root_symbol) or FALLBACK_ACTIVE_CONTRACTS[root_symbol]
+            response, retry_refreshed = self.fetch_quote_response(active_contract)
+            token_refreshed = token_refreshed or retry_refreshed
+
+        if response is None:
+            return None
+        if response.status_code >= 400:
+            LOGGER.warning("Schwab quote request failed for %s with status %s", active_contract, response.status_code)
+            return None
+
         try:
-            import urllib.parse
-            encoded_symbol = urllib.parse.quote(schwab_symbol, safe="")
+            payload = response.json()
+            quote_data = self.extract_quote_payload(payload, active_contract)
+            if quote_data is None:
+                LOGGER.warning("No quote payload found for %s", active_contract)
+                return None
+            return {
+                "root": root_symbol,
+                "active_contract": active_contract,
+                "last": quote_data.get("lastPrice"),
+                "bid": quote_data.get("bidPrice"),
+                "ask": quote_data.get("askPrice"),
+                "mark": quote_data.get("mark"),
+                "timestamp": self.format_quote_timestamp(quote_data),
+                "token_refreshed": token_refreshed,
+                "source": "schwab_live",
+            }
+        except Exception:
+            LOGGER.exception("Failed to parse Schwab quote payload for %s", active_contract)
+            return None
+
+    def fetch_quote_response(self, schwab_symbol: str) -> tuple[httpx.Response | None, bool]:
+        encoded_symbol = urllib.parse.quote(schwab_symbol, safe="")
+        url = f"{self.api_base_url}/marketdata/v1/quotes?symbols={encoded_symbol}"
+        return self.fetch_json(url)
+
+    def fetch_json(self, url: str) -> tuple[httpx.Response | None, bool]:
+        if not self._access_token:
+            LOGGER.warning("SCHWAB_ACCESS_TOKEN is not set; Schwab request skipped for %s", url)
+            return None, False
+
+        response = self._http_get(url, self._access_token)
+        token_refreshed = False
+        if response is None:
+            return None, token_refreshed
+
+        if response.status_code == 401:
+            token_refreshed = self._refresh_access_token()
+            if not token_refreshed:
+                LOGGER.warning("Schwab token refresh failed for %s", url)
+                return None, False
+            response = self._http_get(url, self._access_token)
+
+        return response, token_refreshed
+
+    def _http_get(self, url: str, access_token: str | None) -> httpx.Response | None:
+        try:
             return httpx.get(
-                f"{self._api_base_url}/marketdata/v1/quotes?symbols={encoded_symbol}",
+                url,
                 headers={"Authorization": f"Bearer {access_token}"},
                 timeout=10.0,
             )
         except httpx.HTTPError:
-            LOGGER.exception("Network error while fetching Schwab quote for %s", schwab_symbol)
+            LOGGER.exception("Network error while fetching Schwab resource %s", url)
             return None
         except Exception:
-            LOGGER.exception("Unexpected error while fetching Schwab quote for %s", schwab_symbol)
+            LOGGER.exception("Unexpected error while fetching Schwab resource %s", url)
             return None
 
     def _refresh_access_token(self) -> bool:
         if not all([self._refresh_token, self._client_id, self._client_secret]):
             LOGGER.warning("Schwab refresh credentials are incomplete")
             return False
+
+        credentials = base64.b64encode(
+            f"{self._client_id}:{self._client_secret}".encode()
+        ).decode()
+
         try:
-            credentials = base64.b64encode(
-                f"{self._client_id}:{self._client_secret}".encode()
-            ).decode()
             response = httpx.post(
                 self._token_url,
                 headers={
@@ -145,11 +328,32 @@ class SchwabQuotePriceFeed(PriceFeed):
             return False
 
     @staticmethod
-    def _extract_quote_payload(payload: Mapping[str, Any], schwab_symbol: str) -> Mapping[str, Any] | None:
+    def extract_quote_payload(payload: Mapping[str, Any], schwab_symbol: str) -> Mapping[str, Any] | None:
         direct_payload = payload.get(schwab_symbol)
         if isinstance(direct_payload, Mapping):
             nested_quote = direct_payload.get("quote")
             if isinstance(nested_quote, Mapping):
                 return nested_quote
             return direct_payload
+        return None
+
+    @staticmethod
+    def format_quote_timestamp(quote_payload: Mapping[str, Any]) -> str | None:
+        raw_timestamp = (
+            quote_payload.get("quoteTime")
+            or quote_payload.get("tradeTime")
+            or quote_payload.get("timestamp")
+        )
+        if raw_timestamp is None:
+            return None
+
+        if isinstance(raw_timestamp, (int, float)):
+            timestamp_value = float(raw_timestamp)
+            if timestamp_value > 1_000_000_000_000:
+                timestamp_value /= 1000.0
+            return datetime.fromtimestamp(timestamp_value, tz=UTC).isoformat().replace("+00:00", "Z")
+
+        if isinstance(raw_timestamp, str):
+            return raw_timestamp
+
         return None
