@@ -1,7 +1,7 @@
 """FastAPI application for the standalone futures scalp analyzer."""
-
 from __future__ import annotations
 
+import asyncio
 import base64
 from datetime import UTC, datetime
 import logging
@@ -13,7 +13,7 @@ import httpx
 from fastapi import Depends, FastAPI
 
 from futures_scalp_analyzer.models import FuturesScalpAnalysisResponse, FuturesScalpIdeaRequest
-from futures_scalp_analyzer.price_feed import PriceFeed, SchwabQuotePriceFeed
+from futures_scalp_analyzer.price_feed import PriceFeed
 from futures_scalp_analyzer.service import analyze_request
 
 LOGGER = logging.getLogger(__name__)
@@ -52,14 +52,11 @@ def _fetch_quote_response(schwab_symbol: str, access_token: str | None) -> httpx
 
 def _refresh_quote_access_token() -> bool:
     global _QUOTE_ACCESS_TOKEN
-
     if not all([_QUOTE_REFRESH_TOKEN, _QUOTE_CLIENT_ID, _QUOTE_CLIENT_SECRET]):
         return False
-
     credentials = base64.b64encode(
         f"{_QUOTE_CLIENT_ID}:{_QUOTE_CLIENT_SECRET}".encode()
     ).decode()
-
     response = httpx.post(
         SCHWAB_TOKEN_URL,
         headers={
@@ -82,12 +79,10 @@ def _refresh_quote_access_token() -> bool:
         LOGGER.exception("Failed to log Schwab token refresh response")
     if response.status_code >= 400:
         return False
-
     payload = response.json()
     access_token = payload.get("access_token")
     if not access_token:
         return False
-
     _QUOTE_ACCESS_TOKEN = str(access_token)
     return True
 
@@ -99,14 +94,11 @@ def _extract_quote_payload(payload: Mapping[str, Any], schwab_symbol: str) -> Ma
         if isinstance(quote_payload, Mapping):
             return quote_payload
         return direct_payload
-
     quote_payload = payload.get("quote")
     if isinstance(quote_payload, Mapping):
         return quote_payload
-
     if "lastPrice" in payload or "mark" in payload:
         return payload
-
     return None
 
 
@@ -118,22 +110,64 @@ def _format_quote_timestamp(quote_payload: Mapping[str, Any]) -> str | None:
     )
     if raw_timestamp is None:
         return None
-
     if isinstance(raw_timestamp, (int, float)):
         timestamp_value = float(raw_timestamp)
         if timestamp_value > 1_000_000_000_000:
             timestamp_value /= 1000.0
         return datetime.fromtimestamp(timestamp_value, tz=UTC).isoformat().replace("+00:00", "Z")
-
     if isinstance(raw_timestamp, str):
         return raw_timestamp
-
     return None
+
+
+def _fetch_live_price_sync(symbol: str) -> float | None:
+    """Fetch live price using the same working token logic as /price endpoint."""
+    global _QUOTE_ACCESS_TOKEN
+    normalized_symbol = symbol.upper()
+    schwab_symbol = SHORT_TO_FRONT_MONTH_SYMBOL.get(normalized_symbol)
+    if schwab_symbol is None:
+        LOGGER.warning("No Schwab symbol mapping for %s", normalized_symbol)
+        return None
+    if not _QUOTE_ACCESS_TOKEN:
+        LOGGER.warning("SCHWAB_ACCESS_TOKEN not set; live price unavailable for %s", normalized_symbol)
+        return None
+    try:
+        response = _fetch_quote_response(schwab_symbol, _QUOTE_ACCESS_TOKEN)
+        if response.status_code == 401:
+            if not _refresh_quote_access_token():
+                LOGGER.warning("Token refresh failed; live price unavailable for %s", normalized_symbol)
+                return None
+            response = _fetch_quote_response(schwab_symbol, _QUOTE_ACCESS_TOKEN)
+        if response.status_code >= 400:
+            LOGGER.warning("Schwab quote returned %s for %s", response.status_code, normalized_symbol)
+            return None
+        payload = response.json()
+        quote_payload = _extract_quote_payload(payload, schwab_symbol)
+        if quote_payload is None:
+            LOGGER.warning("No quote payload found for %s", normalized_symbol)
+            return None
+        last_price = quote_payload.get("lastPrice")
+        if last_price is not None:
+            return float(last_price)
+        mark = quote_payload.get("mark")
+        if mark is not None:
+            return float(mark)
+        return None
+    except Exception:
+        LOGGER.exception("Failed to fetch live price for %s", normalized_symbol)
+        return None
+
+
+class AppPriceFeed(PriceFeed):
+    """PriceFeed implementation that delegates to the app-level Schwab token logic."""
+
+    async def get_live_price(self, symbol: str) -> float | None:
+        return await asyncio.to_thread(_fetch_live_price_sync, symbol)
 
 
 def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
     app = FastAPI(title="Futures Scalp Analyzer", version="0.1.0")
-    app.state.price_feed = price_feed or SchwabQuotePriceFeed()
+    app.state.price_feed = price_feed or AppPriceFeed()
 
     def get_price_feed() -> PriceFeed:
         return app.state.price_feed
@@ -152,17 +186,14 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
                 "error": "unsupported_symbol",
                 "detail": f"Unsupported symbol: {normalized_symbol}",
             }
-
         global _QUOTE_ACCESS_TOKEN
         token_refreshed = False
-
         if not _QUOTE_ACCESS_TOKEN:
             return {
                 "symbol": normalized_symbol,
                 "error": "missing_access_token",
                 "detail": "SCHWAB_ACCESS_TOKEN is not set",
             }
-
         try:
             response = _fetch_quote_response(schwab_symbol, _QUOTE_ACCESS_TOKEN)
             if response.status_code == 401:
@@ -174,14 +205,12 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
                         "detail": "Unable to refresh Schwab access token after 401 response",
                     }
                 response = _fetch_quote_response(schwab_symbol, _QUOTE_ACCESS_TOKEN)
-
             if response.status_code >= 400:
                 return {
                     "symbol": normalized_symbol,
                     "error": "quote_request_failed",
                     "detail": f"Schwab quote request returned status {response.status_code}",
                 }
-
             payload = response.json()
             quote_payload = _extract_quote_payload(payload, schwab_symbol)
             if quote_payload is None:
@@ -190,7 +219,6 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
                     "error": "quote_parse_failed",
                     "detail": f"No quote payload found for {schwab_symbol}",
                 }
-
             return {
                 "symbol": normalized_symbol,
                 "schwab_symbol": schwab_symbol,
