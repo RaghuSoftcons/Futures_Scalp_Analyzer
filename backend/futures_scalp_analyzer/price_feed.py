@@ -1,8 +1,8 @@
 """Read-only live price abstraction for Schwab quote access."""
-
 from __future__ import annotations
 
 import asyncio
+import base64
 from abc import ABC, abstractmethod
 import logging
 import os
@@ -53,15 +53,12 @@ class SchwabQuotePriceFeed(PriceFeed):
         except KeyError:
             LOGGER.warning("Unsupported symbol requested from Schwab feed: %s", symbol)
             return None
-
         if not self._access_token:
             LOGGER.warning("SCHWAB_ACCESS_TOKEN is not set; live price unavailable for %s", symbol)
             return None
-
         quote = self._fetch_quote(spec.schwab_symbol, self._access_token)
         if quote is None:
             return None
-
         if quote.status_code == 401:
             if not self._refresh_access_token():
                 LOGGER.warning("Schwab token refresh failed; live price unavailable for %s", symbol)
@@ -70,11 +67,9 @@ class SchwabQuotePriceFeed(PriceFeed):
             if quote is None or quote.status_code == 401:
                 LOGGER.warning("Schwab quote retry failed after refresh for %s", symbol)
                 return None
-
         if quote.status_code >= 400:
             LOGGER.warning("Schwab quote request failed for %s with status %s", symbol, quote.status_code)
             return None
-
         try:
             payload = quote.json()
             quote_data = self._extract_quote_payload(payload, spec.schwab_symbol)
@@ -89,14 +84,14 @@ class SchwabQuotePriceFeed(PriceFeed):
         except Exception:
             LOGGER.exception("Failed to parse Schwab quote payload for %s", symbol)
             return None
-
         return None
 
     def _fetch_quote(self, schwab_symbol: str, access_token: str | None) -> httpx.Response | None:
         try:
+            import urllib.parse
+            encoded_symbol = urllib.parse.quote(schwab_symbol, safe="")
             return httpx.get(
-                f"{self._api_base_url}/marketdata/v1/quotes",
-                params={"symbols": schwab_symbol},
+                f"{self._api_base_url}/marketdata/v1/quotes?symbols={encoded_symbol}",
                 headers={"Authorization": f"Bearer {access_token}"},
                 timeout=10.0,
             )
@@ -111,17 +106,26 @@ class SchwabQuotePriceFeed(PriceFeed):
         if not all([self._refresh_token, self._client_id, self._client_secret]):
             LOGGER.warning("Schwab refresh credentials are incomplete")
             return False
-
         try:
+            credentials = base64.b64encode(
+                f"{self._client_id}:{self._client_secret}".encode()
+            ).decode()
             response = httpx.post(
                 self._token_url,
+                headers={
+                    "Authorization": f"Basic {credentials}",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
                 data={
                     "grant_type": "refresh_token",
                     "refresh_token": self._refresh_token,
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
                 },
                 timeout=10.0,
+            )
+            LOGGER.info(
+                "Schwab token refresh status=%s body=%s",
+                response.status_code,
+                response.text,
             )
             if response.status_code >= 400:
                 LOGGER.warning("Schwab token refresh returned status %s", response.status_code)
