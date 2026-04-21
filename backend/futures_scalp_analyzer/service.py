@@ -11,6 +11,7 @@ from .models import FuturesScalpAnalysisResponse, FuturesScalpIdeaRequest
 from .price_feed import PriceFeed
 from .recommendations import compute_final_recommendation
 from .risk import evaluate_session_status, get_account_risk_template
+from .session_guard import check_session_allowed
 from .symbols import SUPPORTED_SYMBOLS, SymbolSpec
 
 
@@ -282,6 +283,79 @@ async def analyze_request(
 ) -> FuturesScalpAnalysisResponse | dict[str, Any]:
     spec = SUPPORTED_SYMBOLS[request.symbol]
     risk_template = get_account_risk_template(request.account_size)
+    guard_state = check_session_allowed(
+        request.account_size,
+        request.realized_loss_count_today,
+        request.realized_pnl_today,
+    )
+
+    if not bool(guard_state["allowed"]):
+        entry_price, stop_price, target_price = _resolve_trade_levels(request, spec, risk_template, None)
+        return FuturesScalpAnalysisResponse(
+            symbol=request.symbol,
+            side=request.side,
+            direction=request.side.upper(),
+            entry_price=entry_price,
+            stop_price=stop_price,
+            target_price=target_price,
+            contracts=request.contracts,
+            tick_value=spec.tick_value,
+            point_value=spec.point_value,
+            risk_per_contract=0.0,
+            reward_per_contract=0.0,
+            rr_ratio=0.0,
+            atr_multiple_risk=0.0,
+            live_price=None,
+            distance_entry_to_live=None,
+            entry_verdict="unavailable",
+            trade_verdict="NO_TRADE",
+            liquidity_score=spec.liquidity_score,
+            risk_rule_violations={
+                "per_trade_risk_exceeds_limit": False,
+                "max_loss_trades_reached": False,
+                "daily_profit_target_reached": False,
+            },
+            realized_pnl_today=request.realized_pnl_today,
+            realized_loss_count_today=request.realized_loss_count_today,
+            daily_profit_target=risk_template["daily_profit_target"],
+            daily_loss_limit=risk_template["daily_loss_limit"],
+            per_trade_risk_limit=risk_template["per_trade_risk"],
+            per_trade_profit_target=risk_template["per_trade_target"],
+            active_contract=None,
+            verdict="LOCKED",
+            entry_zone="",
+            stop_loss="",
+            target="",
+            rr_ratio_display="",
+            why="",
+            watch_out_for="",
+            account_summary="",
+            session_status="locked",
+            daily_loss_pct=float(guard_state["daily_loss_pct"]),
+            daily_loss_limit_pct=float(guard_state["daily_loss_limit_pct"]),
+            final_recommendation="STOP TRADING",
+            final_recommendation_comment=str(guard_state["reason"]),
+            directional_score=0.0,
+            momentum_bias="neutral",
+            ema9="unavailable",
+            ema20="unavailable",
+            vwap="unavailable",
+            rsi="unavailable",
+            live_atr="unavailable",
+            volume_ratio=None,
+            trend="unavailable",
+            market_structure="unavailable",
+            vwap_position=None,
+            rsi_condition="unavailable",
+            volume_condition="unavailable",
+            session_high="unavailable",
+            session_low="unavailable",
+            prior_day_high="unavailable",
+            prior_day_low="unavailable",
+            market_data_available=False,
+            as_of=datetime.now(timezone.utc),
+        )
+
     session_state = evaluate_session_status(
         request.account_size,
         request.realized_loss_count_today,
@@ -497,6 +571,10 @@ async def analyze_request(
         session_state=session_state,
         final_recommendation=ctx["final_recommendation"],
     )
+    if str(guard_state["session_status"]) == "warning":
+        warning_message = str(guard_state["reason"])
+        if warning_message:
+            gpt_fields["watch_out_for"] = f"{warning_message} {gpt_fields['watch_out_for']}".strip()
 
     return FuturesScalpAnalysisResponse(
         symbol=request.symbol,
@@ -534,6 +612,8 @@ async def analyze_request(
         watch_out_for=gpt_fields["watch_out_for"],
         account_summary=gpt_fields["account_summary"],
         session_status=str(session_state["session_status"]),
+        daily_loss_pct=float(guard_state["daily_loss_pct"]),
+        daily_loss_limit_pct=float(guard_state["daily_loss_limit_pct"]),
         final_recommendation=ctx["final_recommendation"],
         final_recommendation_comment=ctx["final_recommendation_comment"],
         directional_score=round(directional_score, 1),

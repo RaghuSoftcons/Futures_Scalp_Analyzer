@@ -12,9 +12,9 @@ SupportedSymbol = Literal["NQ", "ES", "CL", "GC", "SI", "ZB", "UB", "MNQ", "MES"
 TradeSide = Literal["long", "short"]
 TradeMode = Literal["idea_eval", "position_mgmt"]
 TradeSession = Literal["RTH", "ETH"]
-Recommendation = Literal["take", "take only on pullback", "scalp only", "flatten", "pass", "unavailable"]
+Recommendation = Literal["take", "take only on pullback", "scalp only", "flatten", "pass", "unavailable", "STOP TRADING"]
 EntryVerdict = Literal["attractive", "fair", "rich", "unavailable"]
-TradeVerdict = Literal["favorable", "neutral", "speculative", "avoid", "unavailable"]
+TradeVerdict = Literal["favorable", "neutral", "speculative", "avoid", "unavailable", "NO_TRADE"]
 LiquidityScore = Literal["good", "acceptable", "weak"]
 
 
@@ -112,6 +112,8 @@ class FuturesScalpAnalysisResponse(BaseModel):
     watch_out_for: str
     account_summary: str
     session_status: str
+    daily_loss_pct: float = 0.0
+    daily_loss_limit_pct: float = 3.0
     final_recommendation: Recommendation
     final_recommendation_comment: str
     directional_score: float = 0.0
