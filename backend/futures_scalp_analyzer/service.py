@@ -17,6 +17,42 @@ from .session_guard import check_session_allowed
 from .symbols import SUPPORTED_SYMBOLS, SymbolSpec
 
 
+
+def _compute_analysis_long(
+    side: str,
+    trend: str | None,
+    market_structure: str | None,
+    rr_ratio: float,
+    entry_verdict: str,
+    timeframe_alignment: str,
+    rsi: float | None,
+    vwap_position: str | None,
+) -> str:
+    """Generate a plain-English analysis sentence for one direction."""
+    if side == "long":
+        momentum_desc = "bullish" if trend in ("uptrend",) else "bearish" if trend in ("downtrend",) else "mixed"
+        structure_desc = "bullish" if market_structure == "bullish_structure" else "bearish" if market_structure == "bearish_structure" else "neutral"
+        rsi_desc = f"RSI {rsi:.0f} (overbought)" if rsi is not None and rsi > 70 else f"RSI {rsi:.0f} (oversold — favorable for long)" if rsi is not None and rsi < 35 else f"RSI {rsi:.0f} (neutral)" if rsi is not None else "RSI unavailable"
+        return (
+            f"Momentum leaning {momentum_desc} short-term, "
+            f"{structure_desc} market structure, "
+            f"{rsi_desc}, "
+            f"R:R ({rr_ratio:.1f}:1), "
+            f"entry is {entry_verdict}, "
+            f"timeframe alignment: {timeframe_alignment}."
+        )
+    else:
+        momentum_desc = "bearish" if trend in ("downtrend",) else "bullish" if trend in ("uptrend",) else "mixed"
+        structure_desc = "bearish" if market_structure == "bearish_structure" else "bullish" if market_structure == "bullish_structure" else "neutral"
+        rsi_desc = f"RSI {rsi:.0f} (overbought — favorable for short)" if rsi is not None and rsi > 65 else f"RSI {rsi:.0f} (oversold)" if rsi is not None and rsi < 30 else f"RSI {rsi:.0f} (neutral)" if rsi is not None else "RSI unavailable"
+        return (
+            f"Momentum leaning {momentum_desc} short-term, "
+            f"{structure_desc} market structure, "
+            f"{rsi_desc}, "
+            f"R:R ({rr_ratio:.1f}:1) — shorts align with structure if {vwap_position or 'N/A'} holds, "
+            f"timeframe alignment: {timeframe_alignment}."
+        )
+
 def _ema(values: list[float], period: int) -> float | None:
     if len(values) < period:
         return None
@@ -823,4 +859,14 @@ async def analyze_request(
         prior_day_low=gpt_fields["prior_day_low"],
         market_data_available=bool(market_context.get("market_data_available", False)),
         as_of=datetime.now(timezone.utc),
+        analysis_long=_compute_analysis_long(
+            side="long", trend=gpt_fields["trend"], market_structure=gpt_fields["market_structure"],
+            rr_ratio=rr_ratio, entry_verdict=entry_verdict, timeframe_alignment=timeframe_alignment,
+            rsi=market_context.get("rsi"), vwap_position=market_context.get("vwap_position"),
+        ),
+        analysis_short=_compute_analysis_long(
+            side="short", trend=gpt_fields["trend"], market_structure=gpt_fields["market_structure"],
+            rr_ratio=rr_ratio, entry_verdict=entry_verdict, timeframe_alignment=timeframe_alignment,
+            rsi=market_context.get("rsi"), vwap_position=market_context.get("vwap_position"),
+        ),
     )
