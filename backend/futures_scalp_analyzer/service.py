@@ -161,6 +161,84 @@ def _momentum_bias(directional_score: float) -> str:
     return "neutral"
 
 
+def _ema(values: list[float], period: int) -> float | None:
+    if len(values) < period:
+        return None
+    seed = sum(values[:period]) / period
+    multiplier = 2.0 / (period + 1)
+    ema_value = seed
+    for value in values[period:]:
+        ema_value = (value - ema_value) * multiplier + ema_value
+    return ema_value
+
+
+def _wilder_rsi(closes: list[float], period: int = 14) -> float | None:
+    if len(closes) <= period:
+        return None
+    gains: list[float] = []
+    losses: list[float] = []
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        gains.append(max(delta, 0.0))
+        losses.append(max(-delta, 0.0))
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    for i in range(period, len(gains)):
+        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
+        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
+
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def _timeframe_vwap(bars: list[dict[str, Any]]) -> float | None:
+    if not bars:
+        return None
+    cumulative_pv = 0.0
+    cumulative_volume = 0.0
+    for bar in bars:
+        high = float(bar["high"])
+        low = float(bar["low"])
+        close = float(bar["close"])
+        volume = float(bar.get("volume", 0.0))
+        typical_price = (high + low + close) / 3.0
+        cumulative_pv += typical_price * volume
+        cumulative_volume += volume
+    return (cumulative_pv / cumulative_volume) if cumulative_volume else None
+
+
+def _compute_timeframe_bias(bars: list[dict[str, Any]]) -> str:
+    if len(bars) < 20:
+        return "neutral"
+    closes = [float(bar["close"]) for bar in bars]
+    latest_price = closes[-1]
+    ema9 = _ema(closes, 9)
+    ema20 = _ema(closes, 20)
+    rsi = _wilder_rsi(closes, 14)
+    vwap = _timeframe_vwap(bars)
+    if ema9 is None or ema20 is None or rsi is None or vwap is None:
+        return "neutral"
+    if ema9 > ema20 and latest_price > vwap and rsi > 50:
+        return "long"
+    if ema9 < ema20 and latest_price < vwap and rsi < 50:
+        return "short"
+    return "neutral"
+
+
+def _timeframe_alignment(bias_1m: str, bias_3m: str, bias_5m: str, bias_15m: str) -> str:
+    biases = [bias_1m, bias_3m, bias_5m, bias_15m]
+    if all(bias == "long" for bias in biases):
+        return "aligned_long"
+    if all(bias == "short" for bias in biases):
+        return "aligned_short"
+    if sum(1 for bias in biases if bias == "neutral") >= 3:
+        return "neutral"
+    return "mixed"
+
+
 def _build_gpt_fields(
     account_size: int,
     losses_today: int,
@@ -192,6 +270,11 @@ def _build_gpt_fields(
     prior_day_low: float | None,
     live_atr: float | None,
     market_data_available: bool,
+    bias_1m: str,
+    bias_3m: str,
+    bias_5m: str,
+    bias_15m: str,
+    timeframe_alignment: str,
     session_state: dict[str, float | int | bool | str],
     final_recommendation: str,
 ) -> dict[str, str]:
@@ -235,6 +318,12 @@ def _build_gpt_fields(
             "prior_day_low": "unavailable",
             "live_atr": "unavailable",
             "market_data_available": "false",
+            "bias_1m": "neutral",
+            "bias_3m": "neutral",
+            "bias_5m": "neutral",
+            "bias_15m": "neutral",
+            "timeframe_alignment": "neutral",
+            "timeframe_bias_section": "## Timeframe Bias\n1-min: neutral\n3-min: neutral\n5-min: neutral\n15-min: neutral\nAlignment: neutral",
         }
 
     price_context = "above" if live_price is not None and live_price > entry_price else "below"
@@ -273,6 +362,19 @@ def _build_gpt_fields(
         "prior_day_low": _fmt_number(prior_day_low),
         "live_atr": _fmt_number(live_atr),
         "market_data_available": str(market_data_available).lower(),
+        "bias_1m": bias_1m,
+        "bias_3m": bias_3m,
+        "bias_5m": bias_5m,
+        "bias_15m": bias_15m,
+        "timeframe_alignment": timeframe_alignment,
+        "timeframe_bias_section": (
+            "## Timeframe Bias\n"
+            f"1-min: {bias_1m}\n"
+            f"3-min: {bias_3m}\n"
+            f"5-min: {bias_5m}\n"
+            f"15-min: {bias_15m}\n"
+            f"Alignment: {timeframe_alignment}"
+        ),
     }
 
 
@@ -323,6 +425,11 @@ async def analyze_request(
             prior_day_low=None,
             live_atr=None,
             market_data_available=False,
+            bias_1m="neutral",
+            bias_3m="neutral",
+            bias_5m="neutral",
+            bias_15m="neutral",
+            timeframe_alignment="neutral",
             session_state=session_state,
             final_recommendation="pass",
         )
@@ -370,6 +477,11 @@ async def analyze_request(
             final_recommendation_comment=str(session_state["reason"]),
             directional_score=0.0,
             momentum_bias="neutral",
+            bias_1m="neutral",
+            bias_3m="neutral",
+            bias_5m="neutral",
+            bias_15m="neutral",
+            timeframe_alignment="neutral",
             market_data_available=False,
             as_of=datetime.now(timezone.utc),
         )
@@ -395,18 +507,29 @@ async def analyze_request(
             "as_of": datetime.now(timezone.utc).isoformat(),
         }
     bars_1m: list[dict] = []
+    bars_3m: list[dict] = []
     bars_5m: list[dict] = []
     bars_15m: list[dict] = []
     daily_bars: list[dict] = []
-    try:
-        bars_1m, bars_5m, bars_15m, daily_bars = await asyncio.gather(
-            price_feed.get_bars(request.symbol, "minute", 1, "day", 1),
-            price_feed.get_bars(request.symbol, "minute", 5, "day", 2),
-            price_feed.get_bars(request.symbol, "minute", 15, "day", 5),
-            price_feed.get_bars(request.symbol, "daily", 1, "day", 5),
-        )
-    except Exception:
-        bars_1m, bars_5m, bars_15m, daily_bars = [], [], [], []
+    async def _safe_get_bars(frequency_type: str, frequency: int, period_type: str, period: int) -> list[dict]:
+        try:
+            return await price_feed.get_bars(request.symbol, frequency_type, frequency, period_type, period)
+        except Exception:
+            return []
+
+    bars_1m, bars_3m, bars_5m, bars_15m, daily_bars = await asyncio.gather(
+        _safe_get_bars("minute", 1, "day", 1),
+        _safe_get_bars("minute", 3, "day", 2),
+        _safe_get_bars("minute", 5, "day", 2),
+        _safe_get_bars("minute", 15, "day", 5),
+        _safe_get_bars("daily", 1, "day", 5),
+    )
+
+    bias_1m = _compute_timeframe_bias(bars_1m)
+    bias_3m = _compute_timeframe_bias(bars_3m)
+    bias_5m = _compute_timeframe_bias(bars_5m)
+    bias_15m = _compute_timeframe_bias(bars_15m)
+    timeframe_alignment = _timeframe_alignment(bias_1m, bias_3m, bias_5m, bias_15m)
 
     prior_day_high = float(daily_bars[-2]["high"]) if len(daily_bars) >= 2 else None
     prior_day_low = float(daily_bars[-2]["low"]) if len(daily_bars) >= 2 else None
@@ -494,6 +617,11 @@ async def analyze_request(
         prior_day_low=market_context.get("prior_day_low"),
         live_atr=market_context.get("live_atr"),
         market_data_available=bool(market_context.get("market_data_available", False)),
+        bias_1m=bias_1m,
+        bias_3m=bias_3m,
+        bias_5m=bias_5m,
+        bias_15m=bias_15m,
+        timeframe_alignment=timeframe_alignment,
         session_state=session_state,
         final_recommendation=ctx["final_recommendation"],
     )
@@ -538,6 +666,11 @@ async def analyze_request(
         final_recommendation_comment=ctx["final_recommendation_comment"],
         directional_score=round(directional_score, 1),
         momentum_bias=momentum_bias,
+        bias_1m=gpt_fields["bias_1m"],
+        bias_3m=gpt_fields["bias_3m"],
+        bias_5m=gpt_fields["bias_5m"],
+        bias_15m=gpt_fields["bias_15m"],
+        timeframe_alignment=gpt_fields["timeframe_alignment"],
         ema9=gpt_fields["ema9"],
         ema20=gpt_fields["ema20"],
         vwap=gpt_fields["vwap"],

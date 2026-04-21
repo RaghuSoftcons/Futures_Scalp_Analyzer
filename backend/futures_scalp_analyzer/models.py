@@ -116,6 +116,11 @@ class FuturesScalpAnalysisResponse(BaseModel):
     final_recommendation_comment: str
     directional_score: float = 0.0
     momentum_bias: str = "neutral"
+    bias_1m: str = "neutral"
+    bias_3m: str = "neutral"
+    bias_5m: str = "neutral"
+    bias_15m: str = "neutral"
+    timeframe_alignment: str = "neutral"
     ema9: float | str | None = None
     ema20: float | str | None = None
     vwap: float | str | None = None
