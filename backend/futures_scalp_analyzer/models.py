@@ -14,7 +14,7 @@ TradeMode = Literal["idea_eval", "position_mgmt"]
 TradeSession = Literal["RTH", "ETH"]
 Recommendation = Literal["take", "take only on pullback", "scalp only", "flatten", "pass", "unavailable"]
 EntryVerdict = Literal["attractive", "fair", "rich", "unavailable"]
-TradeVerdict = Literal["favorable", "neutral", "speculative", "avoid", "unavailable"]
+TradeVerdict = Literal["Favorable", "neutral", "speculative", "avoid", "unavailable"]
 LiquidityScore = Literal["good", "acceptable", "weak"]
 
 
@@ -36,73 +36,44 @@ class FuturesScalpIdeaRequest(BaseModel):
     mode: TradeMode = "idea_eval"
     session: TradeSession = "RTH"
     realized_pnl_today: float = Field(default=0.0, validation_alias=AliasChoices("realized_pnl_today", "pnl_today"))
-    realized_loss_count_today: int = Field(default=0, ge=0, validation_alias=AliasChoices("realized_loss_count_today", "losses_today"))
+    realized_loss_count_today: int = Field(default=0, ge=0, validation_alias=AliasChoices("realized_loss_count_today", "loss_count_today"))
     open_positions: list[OpenPosition] = Field(default_factory=list)
 
-    @field_validator("stop_price")
+    @field_validator("account_size", mode="before")
     @classmethod
-    def validate_stop_side(cls, value: float | None, info) -> float | None:
-        if value is None:
-            return value
-        entry_price = info.data.get("entry_price")
-        side = info.data.get("side")
-        if entry_price is None or side is None:
-            return value
-        if side == "long" and value >= entry_price:
-            raise ValueError("Long stop_price must be below entry_price")
-        if side == "short" and value <= entry_price:
-            raise ValueError("Short stop_price must be above entry_price")
-        return value
-
-    @field_validator("target_price")
-    @classmethod
-    def validate_target_side(cls, value: float | None, info) -> float | None:
-        if value is None:
-            return value
-        entry_price = info.data.get("entry_price")
-        side = info.data.get("side")
-        if entry_price is None or side is None:
-            return value
-        if side == "long" and value <= entry_price:
-            raise ValueError("Long target_price must be above entry_price")
-        if side == "short" and value >= entry_price:
-            raise ValueError("Short target_price must be below entry_price")
-        return value
-
-
-class RiskRuleViolations(BaseModel):
-    per_trade_risk_exceeds_limit: bool
-    max_loss_trades_reached: bool
-    daily_profit_target_reached: bool
+    def coerce_account_size(cls, v: object) -> int:
+        return int(v)
 
 
 class FuturesScalpAnalysisResponse(BaseModel):
-    symbol: str
-    side: str
+    model_config = ConfigDict(populate_by_name=True)
+
+    symbol: SupportedSymbol
+    side: TradeSide
     direction: str
-    entry_price: float
-    stop_price: float
-    target_price: float
-    contracts: int
-    tick_value: float
-    point_value: float
-    risk_per_contract: float
-    reward_per_contract: float
-    rr_ratio: float
-    atr_multiple_risk: float
-    live_price: float | None
-    distance_entry_to_live: float | None
+    entry_price: float | None = None
+    stop_price: float | None = None
+    target_price: float | None = None
+    contracts: int | None = None
+    tick_value: float | None = None
+    point_value: float | None = None
+    risk_per_contract: float | None = None
+    reward_per_contract: float | None = None
+    rr_ratio: float | str | None = None
+    atr_multiple_risk: float | None = None
+    live_price: float | None = None
+    distance_entry_to_live: float | None = None
     entry_verdict: EntryVerdict
     trade_verdict: TradeVerdict
     liquidity_score: LiquidityScore
-    risk_rule_violations: RiskRuleViolations
-    realized_pnl_today: float
-    realized_loss_count_today: int
-    daily_profit_target: float
-    daily_loss_limit: float
-    per_trade_risk_limit: float
-    per_trade_profit_target: float
-    active_contract: str | None = None
+    risk_rule_violations: list[str] = Field(default_factory=list)
+    realized_pnl_today: float = 0.0
+    realized_loss_count_today: int = 0
+    daily_profit_target: float = 0.0
+    daily_loss_limit: float = 0.0
+    per_trade_risk_limit: float = 0.0
+    per_trade_profit_target: float = 0.0
+    active_contract: str = ""
     verdict: str
     entry_zone: str
     stop_loss: str
@@ -128,7 +99,9 @@ class FuturesScalpAnalysisResponse(BaseModel):
     top_headlines: list[str] = Field(default_factory=list)
     economic_event_warning: bool = False
     economic_event_block: bool = False
-    next_economic_event: str = ""    economic_events_today: list[str] = Field(default_factory=list)    economic_warning_message: str = ""
+    next_economic_event: str = ""
+    economic_events_today: list[str] = Field(default_factory=list)
+    economic_warning_message: str = ""
     daily_loss_pct: float = 0.0
     daily_loss_limit_pct: float = 3.0
     ema9: float | str | None = None
@@ -147,6 +120,6 @@ class FuturesScalpAnalysisResponse(BaseModel):
     prior_day_high: float | str | None = None
     prior_day_low: float | str | None = None
     market_data_available: bool = False
-    as_of: datetime
+    as_of: datetime | None = None
     analysis_long: str = ""
     analysis_short: str = ""
