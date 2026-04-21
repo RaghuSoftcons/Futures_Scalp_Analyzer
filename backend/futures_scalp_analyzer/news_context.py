@@ -18,13 +18,33 @@ _RSS_HEADERS = {
     "Accept": "application/rss+xml, application/xml, text/xml, */*",
 }
 
-# Free financial news RSS feeds - no API key required
+# Market-moving news RSS feeds - focused on Fed, economy, rates, earnings, geopolitics
+# No API key required. Fetched server-side (Railway), so CORS does not apply.
 _NEWS_RSS_FEEDS = [
-    "https://feeds.reuters.com/reuters/businessNews",
+    # CNBC US Markets - breaking market news
+    "https://www.cnbc.com/id/20910258/device/rss/rss.html",
+    # CNBC Economy - Fed, inflation, jobs, GDP
+    "https://www.cnbc.com/id/15839135/device/rss/rss.html",
+    # AP Business - broad market-moving business news
+    "https://feeds.apnews.com/rss/apf-business",
+    # CNBC Top News - general top stories
     "https://www.cnbc.com/id/10000664/device/rss/rss.html",
-    "https://finance.yahoo.com/news/rssindex",
-    "https://feeds.marketwatch.com/marketwatch/marketpulse/",
+    # NPR Business/Economy
+    "https://feeds.npr.org/1017/rss.xml",
 ]
+
+# Keywords that move markets - used to score bullish/bearish bias
+_BULLISH_TERMS = (
+    "rate cut", "rate cuts", "dovish", "stimulus", "rally", "surge", "beat",
+    "better than expected", "strong jobs", "ceasefire", "trade deal", "deal reached",
+    "pause tariffs", "earnings beat", "record high", "soft landing",
+)
+_BEARISH_TERMS = (
+    "rate hike", "rate hikes", "hawkish", "selloff", "sell-off", "crash",
+    "recession", "tariff", "tariffs", "sanction", "sanctions", "war", "conflict",
+    "hot inflation", "miss", "worse than expected", "layoffs", "shutdown",
+    "default", "downgrade", "fed raises", "unemployment rises",
+)
 
 
 def _default_news_context() -> dict:
@@ -38,15 +58,13 @@ def _default_news_context() -> dict:
 
 
 def _infer_news_bias(headlines: list[str], trump_posts: list[str]) -> tuple[str, str]:
-    positive_terms = ("rally", "surge", "deal", "cut", "cooling inflation", "dovish", "stimulus")
-    negative_terms = ("selloff", "war", "tariff", "hawkish", "hot inflation", "shutdown", "sanction")
     score = 0
     corpus = [*headlines, *trump_posts]
     for line in corpus:
         lowered = line.lower()
-        if any(term in lowered for term in positive_terms):
+        if any(term in lowered for term in _BULLISH_TERMS):
             score += 1
-        if any(term in lowered for term in negative_terms):
+        if any(term in lowered for term in _BEARISH_TERMS):
             score -= 1
     if score > 0:
         return "bullish", "News flow leans risk-on across recent headlines/posts."
@@ -105,7 +123,7 @@ async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> li
 
 
 async def _fetch_headlines_rss(cutoff: datetime, timeout: httpx.Timeout) -> list[str]:
-    """Fetch top financial headlines from free RSS feeds - no API key required."""
+    """Fetch top market-moving headlines from free RSS feeds - no API key required."""
     headlines: list[str] = []
     for feed_url in _NEWS_RSS_FEEDS:
         if len(headlines) >= 5:
@@ -165,7 +183,7 @@ async def get_news_context(timeout: httpx.Timeout | None = None) -> dict:
     # Fetch Trump posts via RSS (avoids Cloudflare block)
     trump_posts = await _fetch_trump_posts_rss(trump_cutoff, timeout)
 
-    # Fetch financial headlines via free RSS feeds (no API key needed)
+    # Fetch market-moving headlines via free RSS feeds (no API key needed)
     top_headlines = await _fetch_headlines_rss(news_cutoff, timeout)
 
     news_bias, news_bias_note = _infer_news_bias(top_headlines, trump_posts)
