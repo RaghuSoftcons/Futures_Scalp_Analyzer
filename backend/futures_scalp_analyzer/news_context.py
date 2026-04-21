@@ -21,6 +21,9 @@ _HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
 }
 
+# Matches e.g. "April 21, 2026, 9:23 AM" or "April 3, 2026, 11:05 PM"
+_TS_RE = re.compile(r"(\w+ \d{1,2}, \d{4}, \d{1,2}:\d{2} [AP]M)")
+
 
 def _default_news_context() -> dict:
     return {
@@ -53,14 +56,10 @@ def _infer_news_bias(headlines: list[str], trump_posts: list[str]) -> tuple[str,
 def _parse_post_time(time_str: str) -> datetime | None:
     """Parse timestamps like 'April 21, 2026, 9:23 AM' from trumpstruth.org."""
     time_str = time_str.strip()
-    for fmt in (
-        "%B %d, %Y, %I:%M %p",
-        "%B %d, %Y, %I:%M%p",
-        "%B %-d, %Y, %I:%M %p",
-    ):
+    for fmt in ("%B %d, %Y, %I:%M %p", "%B %d, %Y, %I:%M%p"):
         try:
             dt = datetime.strptime(time_str, fmt)
-            # Site shows Eastern time - treat as UTC-4 (EDT)
+            # trumpstruth.org displays Eastern time
             return dt.replace(tzinfo=timezone(timedelta(hours=-4)))
         except ValueError:
             continue
@@ -68,7 +67,15 @@ def _parse_post_time(time_str: str) -> datetime | None:
 
 
 async def _fetch_trump_posts_from_archive(cutoff: datetime, timeout: httpx.Timeout) -> list[str]:
-    """Scrape trumpstruth.org for recent Trump posts - reliable public archive."""
+    """Scrape trumpstruth.org - reliable public archive, not blocked by Cloudflare.
+
+    Page structure (confirmed via live DOM inspection):
+      - Timestamp links: <a href="/statuses/{id}">April 21, 2026, 9:23 AM</a>
+      - Post content: the next sibling <div> or <p> after the timestamp link's
+        parent header block.
+    Strategy: find all <a> whose href matches /statuses/\d+ AND whose text
+    matches a timestamp, parse the time, then walk siblings to collect post text.
+    """
     posts: list[str] = []
     try:
         async with httpx.AsyncClient(timeout=timeout, headers=_HEADERS, follow_redirects=True) as client:
@@ -80,45 +87,41 @@ async def _fetch_trump_posts_from_archive(cutoff: datetime, timeout: httpx.Timeo
 
             soup = BeautifulSoup(resp.text, "html.parser")
 
-            # Each post is in a div/article. Find all post containers.
-            # The site shows: author name, @handle, date string, then post content.
-            # Look for elements containing the timestamp pattern
-            for article in soup.find_all(["article", "div"], class_=re.compile(r"post|status|truth|card", re.I)):
-                # Try to extract timestamp
-                time_el = article.find(["time", "span", "p"], string=re.compile(r"\w+ \d+, \d{4}"))
-                if not time_el:
-                    # Fallback: search for date-like text in any element
-                    for el in article.find_all(string=re.compile(r"\w+ \d+, \d{4}, \d+:\d+ [AP]M")):
-                        time_el = el
-                        break
+            # Find all timestamp anchor links: <a href="/statuses/NNN">...
+            ts_links = soup.find_all(
+                "a",
+                href=re.compile(r"^/statuses/\d+$"),
+                string=_TS_RE,
+            )
+            log.info("trumpstruth.org timestamp links found: %d", len(ts_links))
 
-                post_time = None
-                if time_el:
-                    raw_time = time_el.get_text(strip=True) if hasattr(time_el, "get_text") else str(time_el)
-                    post_time = _parse_post_time(raw_time)
+            for ts_link in ts_links:
+                raw_time = ts_link.get_text(strip=True)
+                post_time = _parse_post_time(raw_time)
 
                 if post_time and post_time < cutoff:
-                    log.debug("Post at %s is before cutoff %s, stopping", post_time, cutoff)
+                    log.debug("Post at %s is before cutoff, stopping", post_time)
                     break
 
-                # Extract post content - get all text from article, remove navigation/header noise
-                content_el = article.find(["p", "div"], class_=re.compile(r"content|body|text|message", re.I))
-                if not content_el:
-                    # Use the full article text but strip out the header parts
-                    content_el = article
+                # Walk up to the parent block (usually 2-3 levels up)
+                # then find the next sibling that contains the post text
+                container = ts_link.parent
+                for _ in range(4):  # walk up to 4 levels
+                    if container is None:
+                        break
+                    # The content sibling is typically a div/p that comes
+                    # after the header row containing the timestamp link
+                    sibling = container.find_next_sibling(["div", "p"])
+                    if sibling:
+                        text = sibling.get_text(separator=" ", strip=True)
+                        # Skip if it's another header (contains @realDonaldTrump)
+                        if "@realDonaldTrump" not in text and len(text) > 10:
+                            text = " ".join(text.split())
+                            posts.append(text[:220])
+                            break
+                    container = container.parent
 
-                raw_text = content_el.get_text(separator=" ", strip=True)
-                # Remove common UI text noise
-                raw_text = re.sub(r"Donald J\.?\s*Trump", "", raw_text)
-                raw_text = re.sub(r"@realDonaldTrump", "", raw_text)
-                raw_text = re.sub(r"\w+ \d+, \d{4}, \d+:\d+ [AP]M", "", raw_text)
-                raw_text = re.sub(r"Original Post", "", raw_text)
-                raw_text = " ".join(raw_text.split())
-
-                if raw_text and len(raw_text) > 10:
-                    posts.append(raw_text[:220])
-
-            log.info("trumpstruth.org posts found in window: %d", len(posts))
+            log.info("trumpstruth.org posts parsed: %d", len(posts))
     except Exception as exc:  # noqa: BLE001
         log.warning("trumpstruth.org scrape failed: %s", exc)
     return posts
@@ -136,7 +139,7 @@ async def fetch_news_context(symbol: str) -> dict:
     trump_posts: list[str] = []
     top_headlines: list[str] = []
 
-    # Primary: scrape public archive (not blocked by Cloudflare)
+    # Primary: scrape public archive (bypasses Cloudflare block on Truth Social)
     trump_posts = await _fetch_trump_posts_from_archive(trump_cutoff, timeout)
 
     finnhub_key = os.getenv("FINNHUB_API_KEY")
