@@ -7,4 +7,6 @@ def test_news_context_without_api_key(monkeypatch):
     context = asyncio.run(fetch_news_context("NQ"))
     assert context["news_bias"] in {"bullish", "bearish", "neutral"}
     assert "top_headlines" in context
+    assert "top_headlines_detailed" in context
     assert "trump_posts_recent" in context
+    assert "trump_posts_recent_detailed" in context

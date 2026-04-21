@@ -46,8 +46,10 @@ def _default_news_context() -> dict:
         "news_bias": "neutral",
         "news_bias_note": "No material high-confidence news signals detected.",
         "trump_posts_recent": [],
+        "trump_posts_recent_detailed": [],
         "trump_posts_count": 0,
         "top_headlines": [],
+        "top_headlines_detailed": [],
     }
 
 
@@ -68,9 +70,28 @@ def _infer_news_bias(headlines: list[str], trump_posts: list[str]) -> tuple[str,
     return "neutral", "News flow is mixed or low-signal."
 
 
-async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> list[str]:
+def _isoformat_utc(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_feed_datetime(raw_value: str | None) -> datetime | None:
+    if not raw_value:
+        return None
+    try:
+        return parsedate_to_datetime(raw_value).astimezone(timezone.utc)
+    except Exception:
+        pass
+    try:
+        return datetime.fromisoformat(raw_value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> list[dict[str, str | None]]:
     """Fetch Trump posts via trumpstruth.org RSS feed."""
-    posts: list[str] = []
+    posts: list[dict[str, str | None]] = []
     try:
         today_str = cutoff.strftime("%Y-%m-%d")
         url = f"https://trumpstruth.org/feed?start_date={today_str}&per_page=25"
@@ -89,16 +110,20 @@ async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> li
                 desc_el = item.find("description")
                 if pub_date_el is None or title_el is None:
                     continue
-                try:
-                    pub_dt = parsedate_to_datetime(pub_date_el.text or "").astimezone(timezone.utc)
-                except Exception:
+                pub_dt = _parse_feed_datetime(pub_date_el.text or "")
+                if pub_dt is None:
                     continue
                 if pub_dt < cutoff:
                     continue
                 raw = (desc_el.text if desc_el is not None else None) or (title_el.text or "")
                 text = html.unescape(re.sub(r'<[^>]+>', '', raw)).strip()
                 if text and len(text) >= 5:
-                    posts.append(text)
+                    posts.append(
+                        {
+                            "text": text,
+                            "published_at": _isoformat_utc(pub_dt),
+                        }
+                    )
                 if len(posts) >= 10:
                     break
     except Exception as exc:  # noqa: BLE001
@@ -122,13 +147,13 @@ def _is_article_url(url: str) -> bool:
         return False
 
 
-async def _fetch_headlines_rss(cutoff: datetime, timeout: httpx.Timeout) -> list[str]:
+async def _fetch_headlines_rss(cutoff: datetime, timeout: httpx.Timeout) -> list[dict[str, str | None]]:
     """Fetch top market-moving headlines with article URLs.
 
     Each entry is formatted as: "Headline title -- https://article-url"
     so the GPT can display the title and a clickable link to read more.
     """
-    headlines: list[str] = []
+    headlines: list[dict[str, str | None]] = []
     for feed_url in _NEWS_RSS_FEEDS:
         if len(headlines) >= 5:
             break
@@ -175,15 +200,16 @@ async def _fetch_headlines_rss(cutoff: datetime, timeout: httpx.Timeout) -> list
                                 article_url = candidate
                     # Check pubDate freshness
                     pub_date_el = item.find("pubDate") or item.find("published")
-                    if pub_date_el is not None and pub_date_el.text:
-                        try:
-                            pub_dt = parsedate_to_datetime(pub_date_el.text).astimezone(timezone.utc)
-                            if pub_dt < cutoff:
-                                continue
-                        except Exception:
-                            pass
-                    entry = f"{title_text} -- {article_url}" if article_url else title_text
-                    headlines.append(entry)
+                    pub_dt = _parse_feed_datetime(pub_date_el.text) if pub_date_el is not None and pub_date_el.text else None
+                    if pub_dt is not None and pub_dt < cutoff:
+                        continue
+                    headlines.append(
+                        {
+                            "title": title_text,
+                            "url": article_url or None,
+                            "published_at": _isoformat_utc(pub_dt),
+                        }
+                    )
         except Exception as exc:  # noqa: BLE001
             log.warning("News RSS fetch failed for %s: %s", feed_url, exc)
     log.info("News RSS: collected %d headlines", len(headlines))
@@ -199,8 +225,13 @@ async def get_news_context(timeout: httpx.Timeout | None = None) -> dict:
     news_cutoff = now - timedelta(hours=4)
     context: dict = _default_news_context()
 
-    trump_posts = await _fetch_trump_posts_rss(trump_cutoff, timeout)
-    top_headlines = await _fetch_headlines_rss(news_cutoff, timeout)
+    trump_posts_detailed = await _fetch_trump_posts_rss(trump_cutoff, timeout)
+    top_headlines_detailed = await _fetch_headlines_rss(news_cutoff, timeout)
+    trump_posts = [str(post.get("text", "")) for post in trump_posts_detailed]
+    top_headlines = [
+        f"{item['title']} -- {item['url']}" if item.get("url") else str(item["title"])
+        for item in top_headlines_detailed
+    ]
 
     news_bias, news_bias_note = _infer_news_bias(top_headlines, trump_posts)
     context.update(
@@ -208,8 +239,10 @@ async def get_news_context(timeout: httpx.Timeout | None = None) -> dict:
             "news_bias": news_bias,
             "news_bias_note": news_bias_note,
             "trump_posts_recent": trump_posts[:5],
+            "trump_posts_recent_detailed": trump_posts_detailed[:5],
             "trump_posts_count": len(trump_posts),
             "top_headlines": top_headlines[:5],
+            "top_headlines_detailed": top_headlines_detailed[:5],
         }
     )
     return context

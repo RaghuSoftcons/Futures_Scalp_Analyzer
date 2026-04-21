@@ -29,6 +29,19 @@ class RiskRuleViolations(BaseModel):
     daily_profit_target_reached: bool = False
 
 
+class NewsTimestampedItem(BaseModel):
+    published_at: str | None = None
+
+
+class TrumpPostItem(NewsTimestampedItem):
+    text: str
+
+
+class NewsHeadlineItem(NewsTimestampedItem):
+    title: str
+    url: str | None = None
+
+
 class FuturesScalpIdeaRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -105,7 +118,9 @@ class FuturesScalpAnalysisResponse(BaseModel):
     news_bias_note: str = ""
     trump_posts_count: int = 0
     trump_posts_recent: list[str] = Field(default_factory=list)
+    trump_posts_recent_detailed: list[TrumpPostItem] = Field(default_factory=list)
     top_headlines: list[str] = Field(default_factory=list)
+    top_headlines_detailed: list[NewsHeadlineItem] = Field(default_factory=list)
     economic_event_warning: bool = False
     economic_event_block: bool = False
     next_economic_event: str = ""
