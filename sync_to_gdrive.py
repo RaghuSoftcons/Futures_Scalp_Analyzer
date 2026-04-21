@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run from the repo root after merges to sync backend files to C:\\Users\\Raghu\\Google Drive\\Futures_Scalp_Analyzer."""
+"""Run from the repo root after merges to sync backend files to D:\\Google Drive\\0.00 ChatGPT Codex\\Futures_Scalper_Phase1."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ FILES_TO_COPY = [
     "pyproject.toml",
 ]
 
-DEFAULT_DEST = r"C:\\Users\\Raghu\\Google Drive\\Futures_Scalp_Analyzer"
+DEFAULT_DEST = r"D:\\Google Drive\\0.00 ChatGPT Codex\\Futures_Scalper_Phase1"
 
 
 def parse_args() -> argparse.Namespace:
