@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import html
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -82,7 +83,8 @@ async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> li
                 continue
             if pub_dt < cutoff:
                 continue
-            text = (desc_el.text if desc_el is not None else None) or (title_el.text or "").strip()
+            raw = (desc_el.text if desc_el is not None else None) or (title_el.text or "")
+            text = html.unescape(re.sub(r'<[^>]+>', '', raw)).strip()
             if not text or len(text) < 5:
                 continue
             posts.append(text)
