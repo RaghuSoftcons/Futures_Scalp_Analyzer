@@ -107,6 +107,21 @@ async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> li
     return posts
 
 
+def _is_article_url(url: str) -> bool:
+    """Return True if url looks like a specific article (has a path beyond just /)."""
+    if not url or not url.startswith("http"):
+        return False
+    # Strip protocol and split on /
+    try:
+        path = url.split("/", 3)  # ['https:', '', 'domain.com', 'rest/of/path']
+        if len(path) < 4:
+            return False
+        rest = path[3].strip("/")
+        return len(rest) > 0
+    except Exception:
+        return False
+
+
 async def _fetch_headlines_rss(cutoff: datetime, timeout: httpx.Timeout) -> list[str]:
     """Fetch top market-moving headlines with article URLs.
 
@@ -120,48 +135,55 @@ async def _fetch_headlines_rss(cutoff: datetime, timeout: httpx.Timeout) -> list
         try:
             async with httpx.AsyncClient(headers=_RSS_HEADERS, timeout=timeout, follow_redirects=True) as client:
                 resp = await client.get(feed_url)
-            log.info("News RSS %s status: %s", feed_url, resp.status_code)
-            if resp.status_code != 200:
-                continue
-            try:
-                root = ET.fromstring(resp.text)
-            except ET.ParseError as exc:
-                log.warning("News RSS parse error: %s", exc)
-                continue
-            channel = root.find("channel")
-            if channel is not None:
-                items = channel.findall("item")
-            else:
-                ns = {"atom": "http://www.w3.org/2005/Atom"}
-                items = root.findall("atom:entry", ns) or root.findall("entry")
-            for item in items:
-                if len(headlines) >= 5:
-                    break
-                title_el = item.find("title")
-                if title_el is None:
+                log.info("News RSS %s status: %s", feed_url, resp.status_code)
+                if resp.status_code != 200:
                     continue
-                title_text = html.unescape(re.sub(r'<[^>]+>', '', title_el.text or "")).strip()
-                if not title_text or len(title_text) < 5:
+                try:
+                    root = ET.fromstring(resp.text)
+                except ET.ParseError as exc:
+                    log.warning("News RSS parse error: %s", exc)
                     continue
-                # Extract article URL
-                article_url = ""
-                link_el = item.find("link")
-                if link_el is not None:
-                    if link_el.text and link_el.text.strip().startswith("http"):
-                        article_url = link_el.text.strip()
-                    elif link_el.get("href", "").startswith("http"):
-                        article_url = link_el.get("href", "").strip()
-                # Check pubDate freshness
-                pub_date_el = item.find("pubDate") or item.find("published")
-                if pub_date_el is not None and pub_date_el.text:
-                    try:
-                        pub_dt = parsedate_to_datetime(pub_date_el.text).astimezone(timezone.utc)
-                        if pub_dt < cutoff:
-                            continue
-                    except Exception:
-                        pass
-                entry = f"{title_text} -- {article_url}" if article_url else title_text
-                headlines.append(entry)
+                channel = root.find("channel")
+                if channel is not None:
+                    items = channel.findall("item")
+                else:
+                    ns = {"atom": "http://www.w3.org/2005/Atom"}
+                    items = root.findall("atom:entry", ns) or root.findall("entry")
+                for item in items:
+                    if len(headlines) >= 5:
+                        break
+                    title_el = item.find("title")
+                    if title_el is None:
+                        continue
+                    title_text = html.unescape(re.sub(r'<[^>]+>', '', title_el.text or "")).strip()
+                    if not title_text or len(title_text) < 5:
+                        continue
+                    # Extract article URL - try <link> first, then <guid> as fallback
+                    article_url = ""
+                    link_el = item.find("link")
+                    if link_el is not None:
+                        candidate = (link_el.text or "").strip() or link_el.get("href", "").strip()
+                        if _is_article_url(candidate):
+                            article_url = candidate
+                    # Fallback: <guid isPermaLink="true"> often holds the real article URL
+                    if not article_url:
+                        guid_el = item.find("guid")
+                        if guid_el is not None:
+                            is_perma = guid_el.get("isPermaLink", "true").lower() != "false"
+                            candidate = (guid_el.text or "").strip()
+                            if is_perma and _is_article_url(candidate):
+                                article_url = candidate
+                    # Check pubDate freshness
+                    pub_date_el = item.find("pubDate") or item.find("published")
+                    if pub_date_el is not None and pub_date_el.text:
+                        try:
+                            pub_dt = parsedate_to_datetime(pub_date_el.text).astimezone(timezone.utc)
+                            if pub_dt < cutoff:
+                                continue
+                        except Exception:
+                            pass
+                    entry = f"{title_text} -- {article_url}" if article_url else title_text
+                    headlines.append(entry)
         except Exception as exc:  # noqa: BLE001
             log.warning("News RSS fetch failed for %s: %s", feed_url, exc)
     log.info("News RSS: collected %d headlines", len(headlines))
