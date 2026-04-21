@@ -67,76 +67,78 @@ def _parse_post_time(time_str: str) -> datetime | None:
 
 
 async def _fetch_trump_posts_from_archive(cutoff: datetime, timeout: httpx.Timeout) -> list[str]:
-    """Scrape trumpstruth.org - reliable public archive, not blocked by Cloudflare.
-
-    Page structure (confirmed via live DOM inspection):
-      - Timestamp links: <a href="/statuses/{id}">April 21, 2026, 9:23 AM</a>
-      - Post content: the next sibling <div> or <p> after the timestamp link's
-        parent header block.
-    Strategy: find all <a> whose href matches /statuses/\d+ AND whose text
-    matches a timestamp, parse the time, then walk siblings to collect post text.
-    """
+    """Scrape trumpstruth.org - public archive, not blocked by Cloudflare.
+    The DOM is flat: timestamp <a href='/statuses/N'> and post text <div>
+    are direct siblings inside #main-body. Walk forward from each
+    timestamp link to find the next sibling that contains the post text."""
     posts: list[str] = []
     try:
-        async with httpx.AsyncClient(timeout=timeout, headers=_HEADERS, follow_redirects=True) as client:
+        async with httpx.AsyncClient(headers=_HEADERS, timeout=timeout, follow_redirects=True) as client:
             resp = await client.get("https://www.trumpstruth.org/")
-            log.info("trumpstruth.org status: %s", resp.status_code)
             if resp.status_code != 200:
                 log.warning("trumpstruth.org returned %s", resp.status_code)
                 return posts
 
-            soup = BeautifulSoup(resp.text, "html.parser")
+        soup = BeautifulSoup(resp.text, "html.parser")
 
-            # Find all timestamp anchor links: <a href="/statuses/NNN">...
-            ts_links = soup.find_all(
-                "a",
-                href=re.compile(r"^/statuses/\d+$"),
-                string=_TS_RE,
-            )
-            log.info("trumpstruth.org timestamp links found: %d", len(ts_links))
+        # Find all timestamp links: <a href="/statuses/12345">April 21, 2026, 9:23 AM</a>
+        ts_links = soup.find_all("a", href=re.compile(r"^/statuses/\d+$"))
+        log.info("trumpstruth.org: found %d timestamp links", len(ts_links))
 
-            for ts_link in ts_links:
-                raw_time = ts_link.get_text(strip=True)
-                post_time = _parse_post_time(raw_time)
+        for ts_link in ts_links:
+            time_str = ts_link.get_text(strip=True)
+            if not _TS_RE.match(time_str):
+                continue
 
-                if post_time and post_time < cutoff:
-                    log.debug("Post at %s is before cutoff, stopping", post_time)
-                    break
+            post_dt = _parse_post_time(time_str)
+            if post_dt is None:
+                continue
+            if post_dt < cutoff:
+                break  # posts are newest-first; stop when older than cutoff
 
-                # Walk up to the parent block (usually 2-3 levels up)
-                # then find the next sibling that contains the post text
-                container = ts_link.parent
-                for _ in range(4):  # walk up to 4 levels
-                    if container is None:
-                        break
-                    # The content sibling is typically a div/p that comes
-                    # after the header row containing the timestamp link
-                    sibling = container.find_next_sibling(["div", "p"])
-                    if sibling:
-                        text = sibling.get_text(separator=" ", strip=True)
-                        # Skip if it's another header (contains @realDonaldTrump)
-                        if "@realDonaldTrump" not in text and len(text) > 10:
-                            text = " ".join(text.split())
-                            posts.append(text[:220])
-                            break
-                    container = container.parent
+            # The post text is in the next sibling element after the timestamp link.
+            # DOM is flat, so iterate next_siblings skipping NavigableString whitespace.
+            text = None
+            for sibling in ts_link.next_siblings:
+                # Skip whitespace text nodes
+                if isinstance(sibling, str):
+                    continue
+                sibling_text = sibling.get_text(separator=" ", strip=True)
+                # Skip headers containing @realDonaldTrump or very short nodes
+                if "@realDonaldTrump" in sibling_text or len(sibling_text) < 5:
+                    continue
+                # Skip the 'Original Post' link
+                if sibling.name == "a":
+                    href = sibling.get("href", "")
+                    if "truthsocial.com" in href or "statuses" in href:
+                        continue
+                # This should be the post text div
+                text = " ".join(sibling_text.split())
+                break
 
-            log.info("trumpstruth.org posts parsed: %d", len(posts))
+            if text:
+                posts.append(text[:220])
+
+            if len(posts) >= 10:
+                break
+
     except Exception as exc:  # noqa: BLE001
-        log.warning("trumpstruth.org scrape failed: %s", exc)
+        log.warning("trumpstruth.org fetch failed: %s", exc)
+
+    log.info("trumpstruth.org: collected %d posts", len(posts))
     return posts
 
 
-async def fetch_news_context(symbol: str) -> dict:
-    del symbol
-    context = _default_news_context()
-    timeout = httpx.Timeout(10.0)
+async def get_news_context(timeout: httpx.Timeout | None = None) -> dict:
+    """Return news bias, Trump posts and top headlines."""
+    if timeout is None:
+        timeout = httpx.Timeout(15.0)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(tz=timezone.utc)
     trump_cutoff = now - timedelta(hours=8)
-    finnhub_cutoff = now - timedelta(hours=2)
+    finnhub_cutoff = now - timedelta(hours=4)
 
-    trump_posts: list[str] = []
+    context: dict = _default_news_context()
     top_headlines: list[str] = []
 
     # Primary: scrape public archive (bypasses Cloudflare block on Truth Social)
