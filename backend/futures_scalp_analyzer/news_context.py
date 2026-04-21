@@ -138,8 +138,8 @@ async def get_news_context(timeout: httpx.Timeout | None = None) -> dict:
         timeout = httpx.Timeout(15.0)
 
     now = datetime.now(tz=timezone.utc)
-    # Use 2-hour cutoff for Trump posts to get recent ones
-    trump_cutoff = now - timedelta(hours=2)
+    # Use 8-hour cutoff for Trump posts to get recent ones
+    trump_cutoff = now - timedelta(hours=8)
     finnhub_cutoff = now - timedelta(hours=4)
 
     context: dict = _default_news_context()
