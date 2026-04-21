@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 log = logging.getLogger(__name__)
 
@@ -68,9 +68,11 @@ def _parse_post_time(time_str: str) -> datetime | None:
 
 async def _fetch_trump_posts_from_archive(cutoff: datetime, timeout: httpx.Timeout) -> list[str]:
     """Scrape trumpstruth.org - public archive, not blocked by Cloudflare.
-    The DOM is flat: timestamp <a href='/statuses/N'> and post text <div>
-    are direct siblings inside #main-body. Walk forward from each
-    timestamp link to find the next sibling that contains the post text."""
+    DOM is flat inside #main-body. Each post has:
+      <a href='/statuses/N'>timestamp</a>  <- timestamp link
+      ... (other sibling tags like 'Original Post' link) ...
+      <div/p>post text</div>               <- post content
+    Walk forward from each timestamp link using Tag instances only."""
     posts: list[str] = []
     try:
         async with httpx.AsyncClient(headers=_HEADERS, timeout=timeout, follow_redirects=True) as client:
@@ -83,9 +85,11 @@ async def _fetch_trump_posts_from_archive(cutoff: datetime, timeout: httpx.Timeo
 
         # Find all timestamp links: <a href="/statuses/12345">April 21, 2026, 9:23 AM</a>
         ts_links = soup.find_all("a", href=re.compile(r"^/statuses/\d+$"))
-        log.info("trumpstruth.org: found %d timestamp links", len(ts_links))
+        log.info("trumpstruth.org: found %d status links", len(ts_links))
 
         for ts_link in ts_links:
+            if not isinstance(ts_link, Tag):
+                continue
             time_str = ts_link.get_text(strip=True)
             if not _TS_RE.match(time_str):
                 continue
@@ -96,23 +100,28 @@ async def _fetch_trump_posts_from_archive(cutoff: datetime, timeout: httpx.Timeo
             if post_dt < cutoff:
                 break  # posts are newest-first; stop when older than cutoff
 
-            # The post text is in the next sibling element after the timestamp link.
-            # DOM is flat, so iterate next_siblings skipping NavigableString whitespace.
+            # Iterate next siblings, looking only at Tag elements (not NavigableString)
             text = None
             for sibling in ts_link.next_siblings:
-                # Skip whitespace text nodes
-                if isinstance(sibling, str):
-                    continue
-                sibling_text = sibling.get_text(separator=" ", strip=True)
-                # Skip headers containing @realDonaldTrump or very short nodes
-                if "@realDonaldTrump" in sibling_text or len(sibling_text) < 5:
-                    continue
-                # Skip the 'Original Post' link
+                if not isinstance(sibling, Tag):
+                    continue  # skip NavigableString / text nodes
+                # Skip the 'Original Post' link (external link)
                 if sibling.name == "a":
                     href = sibling.get("href", "")
-                    if "truthsocial.com" in href or "statuses" in href:
+                    if "truthsocial.com" in str(href) or "statuses" in str(href):
                         continue
-                # This should be the post text div
+                # Skip another timestamp link (means we hit the next post)
+                if sibling.name == "a" and re.match(r"^/statuses/\d+$", str(sibling.get("href", ""))):
+                    break
+                # Skip profile image links and short/empty elements
+                sibling_text = sibling.get_text(separator=" ", strip=True)
+                if not sibling_text or len(sibling_text) < 5:
+                    continue
+                if "@realDonaldTrump" in sibling_text:
+                    continue
+                if "Donald J. Trump" in sibling_text and len(sibling_text) < 30:
+                    continue
+                # This should be the post content
                 text = " ".join(sibling_text.split())
                 break
 
