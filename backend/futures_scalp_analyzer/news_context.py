@@ -75,8 +75,8 @@ async def _fetch_trump_posts_from_archive(cutoff: datetime, timeout: httpx.Timeo
     posts: list[str] = []
     try:
         async with httpx.AsyncClient(headers=_HEADERS, timeout=timeout, follow_redirects=True) as client:
-            resp = await client.get("https://www.trumpstruth.org/")
-            if resp.status_code != 200:
+            today_str = cutoff.strftime("%Y-%m-%d")             url = f"https://www.trumpstruth.org/search?query=&sort=desc&per_page=25&start_date={today_str}&end_date="             resp = await client.get(url)
+            if resp.status_code not in (200, 301, 302):
                 log.warning("trumpstruth.org returned %s", resp.status_code)
                 return posts
             soup = BeautifulSoup(resp.text, "html.parser")
