@@ -21,19 +21,13 @@ _RSS_HEADERS = {
 # Market-moving news RSS feeds - focused on Fed, economy, rates, earnings, geopolitics
 # No API key required. Fetched server-side (Railway), so CORS does not apply.
 _NEWS_RSS_FEEDS = [
-    # CNBC US Markets - breaking market news
     "https://www.cnbc.com/id/20910258/device/rss/rss.html",
-    # CNBC Economy - Fed, inflation, jobs, GDP
     "https://www.cnbc.com/id/15839135/device/rss/rss.html",
-    # AP Business - broad market-moving business news
     "https://feeds.apnews.com/rss/apf-business",
-    # CNBC Top News - general top stories
     "https://www.cnbc.com/id/10000664/device/rss/rss.html",
-    # NPR Business/Economy
     "https://feeds.npr.org/1017/rss.xml",
 ]
 
-# Keywords that move markets - used to score bullish/bearish bias
 _BULLISH_TERMS = (
     "rate cut", "rate cuts", "dovish", "stimulus", "rally", "surge", "beat",
     "better than expected", "strong jobs", "ceasefire", "trade deal", "deal reached",
@@ -59,7 +53,8 @@ def _default_news_context() -> dict:
 
 def _infer_news_bias(headlines: list[str], trump_posts: list[str]) -> tuple[str, str]:
     score = 0
-    corpus = [*headlines, *trump_posts]
+    headline_titles = [h.split(" -- ")[0] if " -- " in h else h for h in headlines]
+    corpus = [*headline_titles, *trump_posts]
     for line in corpus:
         lowered = line.lower()
         if any(term in lowered for term in _BULLISH_TERMS):
@@ -74,46 +69,36 @@ def _infer_news_bias(headlines: list[str], trump_posts: list[str]) -> tuple[str,
 
 
 async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> list[str]:
-    """Fetch Trump posts via trumpstruth.org RSS feed (no Cloudflare challenge).
-
-    RSS feed supports ?start_date=YYYY-MM-DD parameter.
-    Each <item> has <title> (post text) and <pubDate> (RFC 2822 date).
-    """
+    """Fetch Trump posts via trumpstruth.org RSS feed."""
     posts: list[str] = []
     try:
         today_str = cutoff.strftime("%Y-%m-%d")
         url = f"https://trumpstruth.org/feed?start_date={today_str}&per_page=25"
         async with httpx.AsyncClient(headers=_RSS_HEADERS, timeout=timeout, follow_redirects=True) as client:
             resp = await client.get(url)
-            log.info("trumpstruth.org RSS status: %s, content-type: %s", resp.status_code, resp.headers.get("content-type", ""))
+            log.info("trumpstruth.org RSS status: %s", resp.status_code)
             if resp.status_code != 200:
-                log.warning("trumpstruth.org RSS returned %s", resp.status_code)
                 return posts
             root = ET.fromstring(resp.text)
             channel = root.find("channel")
             if channel is None:
-                log.warning("trumpstruth.org RSS: no <channel> element found")
                 return posts
-            items = channel.findall("item")
-            log.info("trumpstruth.org RSS: found %d items", len(items))
-            for item in items:
+            for item in channel.findall("item"):
                 pub_date_el = item.find("pubDate")
                 title_el = item.find("title")
                 desc_el = item.find("description")
                 if pub_date_el is None or title_el is None:
                     continue
                 try:
-                    pub_dt = parsedate_to_datetime(pub_date_el.text or "")
-                    pub_dt = pub_dt.astimezone(timezone.utc)
+                    pub_dt = parsedate_to_datetime(pub_date_el.text or "").astimezone(timezone.utc)
                 except Exception:
                     continue
                 if pub_dt < cutoff:
                     continue
                 raw = (desc_el.text if desc_el is not None else None) or (title_el.text or "")
                 text = html.unescape(re.sub(r'<[^>]+>', '', raw)).strip()
-                if not text or len(text) < 5:
-                    continue
-                posts.append(text)
+                if text and len(text) >= 5:
+                    posts.append(text)
                 if len(posts) >= 10:
                     break
     except Exception as exc:  # noqa: BLE001
@@ -123,7 +108,11 @@ async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> li
 
 
 async def _fetch_headlines_rss(cutoff: datetime, timeout: httpx.Timeout) -> list[str]:
-    """Fetch top market-moving headlines from free RSS feeds - no API key required."""
+    """Fetch top market-moving headlines with article URLs.
+
+    Each entry is formatted as: "Headline title -- https://article-url"
+    so the GPT can display the title and a clickable link to read more.
+    """
     headlines: list[str] = []
     for feed_url in _NEWS_RSS_FEEDS:
         if len(headlines) >= 5:
@@ -137,7 +126,7 @@ async def _fetch_headlines_rss(cutoff: datetime, timeout: httpx.Timeout) -> list
             try:
                 root = ET.fromstring(resp.text)
             except ET.ParseError as exc:
-                log.warning("News RSS %s parse error: %s", feed_url, exc)
+                log.warning("News RSS parse error: %s", exc)
                 continue
             channel = root.find("channel")
             if channel is not None:
@@ -151,20 +140,28 @@ async def _fetch_headlines_rss(cutoff: datetime, timeout: httpx.Timeout) -> list
                 title_el = item.find("title")
                 if title_el is None:
                     continue
-                title_text = (title_el.text or "").strip()
-                title_text = html.unescape(re.sub(r'<[^>]+>', '', title_text)).strip()
+                title_text = html.unescape(re.sub(r'<[^>]+>', '', title_el.text or "")).strip()
                 if not title_text or len(title_text) < 5:
                     continue
+                # Extract article URL
+                article_url = ""
+                link_el = item.find("link")
+                if link_el is not None:
+                    if link_el.text and link_el.text.strip().startswith("http"):
+                        article_url = link_el.text.strip()
+                    elif link_el.get("href", "").startswith("http"):
+                        article_url = link_el.get("href", "").strip()
+                # Check pubDate freshness
                 pub_date_el = item.find("pubDate") or item.find("published")
                 if pub_date_el is not None and pub_date_el.text:
                     try:
-                        pub_dt = parsedate_to_datetime(pub_date_el.text)
-                        pub_dt = pub_dt.astimezone(timezone.utc)
+                        pub_dt = parsedate_to_datetime(pub_date_el.text).astimezone(timezone.utc)
                         if pub_dt < cutoff:
                             continue
                     except Exception:
                         pass
-                headlines.append(title_text)
+                entry = f"{title_text} -- {article_url}" if article_url else title_text
+                headlines.append(entry)
         except Exception as exc:  # noqa: BLE001
             log.warning("News RSS fetch failed for %s: %s", feed_url, exc)
     log.info("News RSS: collected %d headlines", len(headlines))
@@ -180,10 +177,7 @@ async def get_news_context(timeout: httpx.Timeout | None = None) -> dict:
     news_cutoff = now - timedelta(hours=4)
     context: dict = _default_news_context()
 
-    # Fetch Trump posts via RSS (avoids Cloudflare block)
     trump_posts = await _fetch_trump_posts_rss(trump_cutoff, timeout)
-
-    # Fetch market-moving headlines via free RSS feeds (no API key needed)
     top_headlines = await _fetch_headlines_rss(news_cutoff, timeout)
 
     news_bias, news_bias_note = _infer_news_bias(top_headlines, trump_posts)
