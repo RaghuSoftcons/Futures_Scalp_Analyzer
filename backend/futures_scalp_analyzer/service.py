@@ -14,7 +14,7 @@ from .price_feed import PriceFeed
 from .recommendations import compute_final_recommendation
 from .risk import evaluate_session_status, get_account_risk_template
 from .session_guard import check_session_allowed
-from .symbols import SUPPORTED_SYMBOLS, SymbolSpech
+from .symbols import SUPPORTED_SYMBOLS, SymbolSpec
 
 
 
@@ -322,6 +322,8 @@ def _build_gpt_fields(
     top_headlines: list[str],
     economic_event_warning: bool,
     next_economic_event: str,
+    economic_events_today: list[str],
+    economic_warning_message: str,
     session_state: dict[str, float | int | bool | str],
     final_recommendation: str,
 ) -> dict[str, str]:
@@ -438,7 +440,9 @@ def _build_gpt_fields(
         "economic_calendar": (
             "## Economic Calendar\n"
             f"Event warning active: {economic_event_warning}\n"
-            f"Next economic event: {next_economic_event or 'none'}\n\n"
+            f"Next economic event: {next_economic_event or 'none'}\n"
+            f"Events today: {', '.join(economic_events_today) if economic_events_today else 'none'}\n"
+            f"Warning message: {economic_warning_message or 'none'}\n\n"
             "If warning is active, emphasize caution and reduced aggressiveness."
         ),
     }
@@ -487,7 +491,7 @@ async def analyze_request(
             daily_loss_limit=risk_template["daily_loss_limit"],
             per_trade_risk_limit=risk_template["per_trade_risk"],
             per_trade_profit_target=risk_template["per_trade_target"],
-            active_contract=None,
+            active_contract="",
             verdict="STOP TRADING",
             entry_zone="N/A",
             stop_loss="N/A",
@@ -559,6 +563,8 @@ async def analyze_request(
             top_headlines=[],
             economic_event_warning=False,
             next_economic_event="",
+            economic_events_today=[],
+            economic_warning_message="",
             session_state=session_state,
             final_recommendation="pass",
         )
@@ -592,7 +598,7 @@ async def analyze_request(
             daily_loss_limit=risk_template["daily_loss_limit"],
             per_trade_risk_limit=risk_template["per_trade_risk"],
             per_trade_profit_target=risk_template["per_trade_target"],
-            active_contract=active_contract,
+            active_contract=active_contract or "",
             verdict=gpt_fields["verdict"],
             entry_zone=gpt_fields["entry_zone"],
             stop_loss=gpt_fields["stop_loss"],
@@ -775,7 +781,9 @@ async def analyze_request(
         trump_posts_recent=list(news_context.get("trump_posts_recent", [])),
         top_headlines=list(news_context.get("top_headlines", [])),
         economic_event_warning=bool(economic_context.get("event_warning", False)),
-        next_economic_event=str(economic_context.get("next_event", "")),            economic_events_today=list(economic_context.get("events_today", [])),            economic_warning_message=str(economic_context.get("warning_message", "")),
+        next_economic_event=str(economic_context.get("next_event", "")),
+        economic_events_today=list(economic_context.get("events_today", [])),
+        economic_warning_message=str(economic_context.get("warning_message", "")),
         session_state=session_state,
         final_recommendation=ctx["final_recommendation"],
     )
@@ -813,7 +821,7 @@ async def analyze_request(
         daily_loss_limit=risk_template["daily_loss_limit"],
         per_trade_risk_limit=risk_template["per_trade_risk"],
         per_trade_profit_target=risk_template["per_trade_target"],
-        active_contract=active_contract,
+        active_contract=active_contract or "",
         verdict=gpt_fields["verdict"],
         entry_zone=gpt_fields["entry_zone"],
         stop_loss=gpt_fields["stop_loss"],
@@ -839,7 +847,9 @@ async def analyze_request(
         top_headlines=list(news_context.get("top_headlines", [])),
         economic_event_warning=bool(economic_context.get("event_warning", False)),
         economic_event_block=bool(economic_context.get("event_block", False)),
-        next_economic_event=str(economic_context.get("next_event", "")),            economic_events_today=list(economic_context.get("events_today", [])),            economic_warning_message=str(economic_context.get("warning_message", "")),
+        next_economic_event=str(economic_context.get("next_event", "")),
+        economic_events_today=list(economic_context.get("events_today", [])),
+        economic_warning_message=str(economic_context.get("warning_message", "")),
         daily_loss_pct=float(session_guard["daily_loss_pct"]),
         daily_loss_limit_pct=float(session_guard["daily_loss_limit_pct"]),
         ema9=gpt_fields["ema9"],

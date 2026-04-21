@@ -14,13 +14,19 @@ TradeMode = Literal["idea_eval", "position_mgmt"]
 TradeSession = Literal["RTH", "ETH"]
 Recommendation = Literal["take", "take only on pullback", "scalp only", "flatten", "pass", "unavailable"]
 EntryVerdict = Literal["attractive", "fair", "rich", "unavailable"]
-TradeVerdict = Literal["Favorable", "neutral", "speculative", "avoid", "unavailable"]
+TradeVerdict = Literal["favorable", "neutral", "speculative", "avoid", "unavailable"]
 LiquidityScore = Literal["good", "acceptable", "weak"]
 
 
 class OpenPosition(BaseModel):
     symbol: str | None = None
     contracts: int | None = None
+
+
+class RiskRuleViolations(BaseModel):
+    per_trade_risk_exceeds_limit: bool = False
+    max_loss_trades_reached: bool = False
+    daily_profit_target_reached: bool = False
 
 
 class FuturesScalpIdeaRequest(BaseModel):
@@ -66,7 +72,7 @@ class FuturesScalpAnalysisResponse(BaseModel):
     entry_verdict: EntryVerdict
     trade_verdict: TradeVerdict
     liquidity_score: LiquidityScore
-    risk_rule_violations: list[str] = Field(default_factory=list)
+    risk_rule_violations: RiskRuleViolations = Field(default_factory=RiskRuleViolations)
     realized_pnl_today: float = 0.0
     realized_loss_count_today: int = 0
     daily_profit_target: float = 0.0
