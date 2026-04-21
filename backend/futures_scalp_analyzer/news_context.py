@@ -3,22 +3,22 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import httpx
+from bs4 import BeautifulSoup
 
 log = logging.getLogger(__name__)
 
-TRUMP_ACCOUNT_ID = "107780257626128497"
-
-# Browser-like User-Agent to avoid being blocked by Truth Social
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/json",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
 }
 
 
@@ -50,56 +50,94 @@ def _infer_news_bias(headlines: list[str], trump_posts: list[str]) -> tuple[str,
     return "neutral", "News flow is mixed or low-signal."
 
 
+def _parse_post_time(time_str: str) -> datetime | None:
+    """Parse timestamps like 'April 21, 2026, 9:23 AM' from trumpstruth.org."""
+    time_str = time_str.strip()
+    for fmt in (
+        "%B %d, %Y, %I:%M %p",
+        "%B %d, %Y, %I:%M%p",
+        "%B %-d, %Y, %I:%M %p",
+    ):
+        try:
+            dt = datetime.strptime(time_str, fmt)
+            # Site shows Eastern time - treat as UTC-4 (EDT)
+            return dt.replace(tzinfo=timezone(timedelta(hours=-4)))
+        except ValueError:
+            continue
+    return None
+
+
+async def _fetch_trump_posts_from_archive(cutoff: datetime, timeout: httpx.Timeout) -> list[str]:
+    """Scrape trumpstruth.org for recent Trump posts - reliable public archive."""
+    posts: list[str] = []
+    try:
+        async with httpx.AsyncClient(timeout=timeout, headers=_HEADERS, follow_redirects=True) as client:
+            resp = await client.get("https://www.trumpstruth.org/")
+            log.info("trumpstruth.org status: %s", resp.status_code)
+            if resp.status_code != 200:
+                log.warning("trumpstruth.org returned %s", resp.status_code)
+                return posts
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # Each post is in a div/article. Find all post containers.
+            # The site shows: author name, @handle, date string, then post content.
+            # Look for elements containing the timestamp pattern
+            for article in soup.find_all(["article", "div"], class_=re.compile(r"post|status|truth|card", re.I)):
+                # Try to extract timestamp
+                time_el = article.find(["time", "span", "p"], string=re.compile(r"\w+ \d+, \d{4}"))
+                if not time_el:
+                    # Fallback: search for date-like text in any element
+                    for el in article.find_all(string=re.compile(r"\w+ \d+, \d{4}, \d+:\d+ [AP]M")):
+                        time_el = el
+                        break
+
+                post_time = None
+                if time_el:
+                    raw_time = time_el.get_text(strip=True) if hasattr(time_el, "get_text") else str(time_el)
+                    post_time = _parse_post_time(raw_time)
+
+                if post_time and post_time < cutoff:
+                    log.debug("Post at %s is before cutoff %s, stopping", post_time, cutoff)
+                    break
+
+                # Extract post content - get all text from article, remove navigation/header noise
+                content_el = article.find(["p", "div"], class_=re.compile(r"content|body|text|message", re.I))
+                if not content_el:
+                    # Use the full article text but strip out the header parts
+                    content_el = article
+
+                raw_text = content_el.get_text(separator=" ", strip=True)
+                # Remove common UI text noise
+                raw_text = re.sub(r"Donald J\.?\s*Trump", "", raw_text)
+                raw_text = re.sub(r"@realDonaldTrump", "", raw_text)
+                raw_text = re.sub(r"\w+ \d+, \d{4}, \d+:\d+ [AP]M", "", raw_text)
+                raw_text = re.sub(r"Original Post", "", raw_text)
+                raw_text = " ".join(raw_text.split())
+
+                if raw_text and len(raw_text) > 10:
+                    posts.append(raw_text[:220])
+
+            log.info("trumpstruth.org posts found in window: %d", len(posts))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("trumpstruth.org scrape failed: %s", exc)
+    return posts
+
+
 async def fetch_news_context(symbol: str) -> dict:
     del symbol
     context = _default_news_context()
-    timeout = httpx.Timeout(8.0)
+    timeout = httpx.Timeout(10.0)
 
     now = datetime.now(timezone.utc)
-    # Extended to 8 hours to catch posts that might be just outside the old 4-hour window
     trump_cutoff = now - timedelta(hours=8)
     finnhub_cutoff = now - timedelta(hours=2)
 
     trump_posts: list[str] = []
     top_headlines: list[str] = []
 
-    # Build headers - add Bearer token if available
-    truth_headers = dict(_HEADERS)
-    truth_token = os.getenv("TRUTH_SOCIAL_TOKEN")
-    if truth_token:
-        truth_headers["Authorization"] = f"Bearer {truth_token}"
-
-    try:
-        async with httpx.AsyncClient(timeout=timeout, headers=truth_headers, follow_redirects=True) as client:
-            truth_url = (
-                f"https://truthsocial.com/api/v1/accounts/{TRUMP_ACCOUNT_ID}/statuses"
-                "?limit=40&exclude_replies=true"
-            )
-            truth_response = await client.get(truth_url)
-            log.info("Truth Social status: %s", truth_response.status_code)
-            if truth_response.status_code == 200:
-                payload = truth_response.json()
-                log.info("Truth Social posts returned: %d", len(payload))
-                for post in payload:
-                    created_at = post.get("created_at")
-                    content = str(post.get("content") or "")
-                    if not created_at or not content:
-                        continue
-                    post_time = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                    log.debug("Post time: %s, cutoff: %s", post_time, trump_cutoff)
-                    if post_time >= trump_cutoff:
-                        compact = " ".join(content.replace("\n\n", " ").replace("\n", " ").split())
-                        if compact:
-                            trump_posts.append(compact[:220])
-            else:
-                log.warning(
-                    "Truth Social returned %s: %s",
-                    truth_response.status_code,
-                    truth_response.text[:200],
-                )
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Truth Social fetch failed: %s", exc)
-        trump_posts = []
+    # Primary: scrape public archive (not blocked by Cloudflare)
+    trump_posts = await _fetch_trump_posts_from_archive(trump_cutoff, timeout)
 
     finnhub_key = os.getenv("FINNHUB_API_KEY")
     if finnhub_key:
