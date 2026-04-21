@@ -648,7 +648,7 @@ async def analyze_request(
         price_feed.get_bars(request.symbol, "minute", 5, "day", 2),
         price_feed.get_bars(request.symbol, "minute", 15, "day", 5),
         price_feed.get_bars(request.symbol, "daily", 1, "day", 5),
-        fetch_news_context(request.symbol),
+        fetch_news_context(),
         fetch_economic_events(request.symbol),
         return_exceptions=True,
     )
