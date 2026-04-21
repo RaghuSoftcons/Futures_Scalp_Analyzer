@@ -255,6 +255,8 @@ async def analyze_request(
             rr_ratio=0.0,
             entry_verdict="unavailable",
             trade_verdict="avoid",
+            directional_score=0.0,
+            momentum_bias="neutral",
             session_state=session_state,
             final_recommendation="pass",
         )
