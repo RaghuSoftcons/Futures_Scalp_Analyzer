@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 _RSS_HEADERS = {
     "User-Agent": "FuturesScalpAnalyzer/1.0 (RSS reader; +https://github.com/RaghuSoftcons/Futures_Scalp_Analyzer)",
-    "Accept": "application/rss+xml, application/xml, text/xml, */*",
+    "Accept": "application/rss+xml, application/xml, texth/xml, */*",
 }
 
 
@@ -84,7 +84,7 @@ async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> li
             text = (title_el.text or "").strip()
             if not text or len(text) < 5:
                 continue
-            posts.append(text[:280])
+            posts.append(text)
             if len(posts) >= 10:
                 break
     except Exception as exc:  # noqa: BLE001
