@@ -122,6 +122,44 @@ def _resolve_gpt_verdict(final_recommendation: str, session_status: str) -> str:
     return "NO GO"
 
 
+def _compute_directional_score(
+    side: str,
+    live_price: float | None,
+    spec: SymbolSpec,
+    entry_verdict: str,
+    rr_ratio: float,
+    trade_verdict: str,
+) -> float:
+    del side, live_price, spec
+    score = 50.0
+
+    entry_score_map = {
+        "attractive": 15.0,
+        "fair": 5.0,
+        "rich": -15.0,
+    }
+    trade_score_map = {
+        "favorable": 20.0,
+        "neutral": 5.0,
+        "speculative": -10.0,
+        "avoid": -30.0,
+    }
+
+    score += entry_score_map.get(entry_verdict, 0.0)
+    score += trade_score_map.get(trade_verdict, 0.0)
+    score += min((rr_ratio - 1.0) * 5.0, 15.0)
+
+    return max(0.0, min(100.0, score))
+
+
+def _momentum_bias(directional_score: float) -> str:
+    if directional_score >= 65:
+        return "bullish"
+    if directional_score <= 35:
+        return "bearish"
+    return "neutral"
+
+
 def _build_gpt_fields(
     account_size: int,
     losses_today: int,
@@ -137,6 +175,8 @@ def _build_gpt_fields(
     rr_ratio: float,
     entry_verdict: str,
     trade_verdict: str,
+    directional_score: float,
+    momentum_bias: str,
     session_state: dict[str, float | int | bool | str],
     final_recommendation: str,
 ) -> dict[str, str]:
@@ -162,6 +202,7 @@ def _build_gpt_fields(
     why = (
         f"{symbol} is trading {price_context} the planned entry, which makes the current setup read as {entry_verdict} with a {trade_verdict} risk profile. "
         f"The structure targets {_format_dollars(reward_per_contract)} for {_format_dollars(risk_per_contract)} of risk, keeping the scalp disciplined for prop rules."
+        f" Directional momentum bias: {momentum_bias} (score: {directional_score:.0f}/100)."
     )
     watch_out_for = "Do not widen the stop if momentum stalls near the entry zone."
     if verdict == "WAIT":
@@ -258,6 +299,8 @@ async def analyze_request(
             session_status=str(session_state["session_status"]),
             final_recommendation="pass",
             final_recommendation_comment=str(session_state["reason"]),
+            directional_score=0.0,
+            momentum_bias="neutral",
             as_of=datetime.now(timezone.utc),
         )
 
@@ -313,6 +356,15 @@ async def analyze_request(
         "final_recommendation_comment": "",
     }
     compute_final_recommendation(ctx)
+    directional_score = _compute_directional_score(
+        side=request.side,
+        live_price=live_price,
+        spec=spec,
+        entry_verdict=entry_verdict,
+        rr_ratio=rr_ratio,
+        trade_verdict=trade_verdict,
+    )
+    momentum_bias = _momentum_bias(directional_score)
     gpt_fields = _build_gpt_fields(
         account_size=request.account_size,
         losses_today=request.realized_loss_count_today,
@@ -328,6 +380,8 @@ async def analyze_request(
         rr_ratio=rr_ratio,
         entry_verdict=entry_verdict,
         trade_verdict=trade_verdict,
+        directional_score=directional_score,
+        momentum_bias=momentum_bias,
         session_state=session_state,
         final_recommendation=ctx["final_recommendation"],
     )
@@ -370,5 +424,7 @@ async def analyze_request(
         session_status=str(session_state["session_status"]),
         final_recommendation=ctx["final_recommendation"],
         final_recommendation_comment=ctx["final_recommendation_comment"],
+        directional_score=round(directional_score, 1),
+        momentum_bias=momentum_bias,
         as_of=datetime.now(timezone.utc),
     )

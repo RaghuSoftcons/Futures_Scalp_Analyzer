@@ -114,4 +114,6 @@ class FuturesScalpAnalysisResponse(BaseModel):
     session_status: str
     final_recommendation: Recommendation
     final_recommendation_comment: str
+    directional_score: float = 0.0
+    momentum_bias: str = "neutral"
     as_of: datetime
