@@ -178,3 +178,7 @@ async def get_news_context(timeout: httpx.Timeout | None = None) -> dict:
         }
     )
     return context
+
+
+# Backward-compatible alias used by service.py
+fetch_news_context = get_news_context
