@@ -4,25 +4,18 @@ from __future__ import annotations
 import logging
 import os
 import re
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 import httpx
-from bs4 import BeautifulSoup, Tag
 
 log = logging.getLogger(__name__)
 
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
+_RSS_HEADERS = {
+    "User-Agent": "FuturesScalpAnalyzer/1.0 (RSS reader; +https://github.com/RaghuSoftcons/Futures_Scalp_Analyzer)",
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
 }
-
-# Matches e.g. "April 21, 2026, 9:23 AM" or "April 3, 2026, 11:05 PM"
-_TS_RE = re.compile(r"(\w+ \d{1,2}, \d{4}, \d{1,2}:\d{2} [AP]M)")
 
 
 def _default_news_context() -> dict:
@@ -53,84 +46,50 @@ def _infer_news_bias(headlines: list[str], trump_posts: list[str]) -> tuple[str,
     return "neutral", "News flow is mixed or low-signal."
 
 
-def _parse_post_time(time_str: str) -> datetime | None:
-    """Parse timestamps like 'April 21, 2026, 9:23 AM' from trumpstruth.org."""
-    time_str = time_str.strip()
-    for fmt in ("%B %d, %Y, %I:%M %p", "%B %d, %Y, %I:%M%p"):
-        try:
-            dt = datetime.strptime(time_str, fmt)
-            # trumpstruth.org displays Eastern time
-            return dt.replace(tzinfo=timezone(timedelta(hours=-4)))
-        except ValueError:
-            continue
-    return None
-
-
-async def _fetch_trump_posts_from_archive(cutoff: datetime, timeout: httpx.Timeout) -> list[str]:
-    """Scrape trumpstruth.org - public archive.
-    DOM is flat inside #main-body. Each post block:
-      [profile link] [name link] [@handle link] [dot span] [timestamp link /statuses/N] [Original Post link]
-      [post text div]
-    Walk forward from each timestamp link using Tag instances only."""
+async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> list[str]:
+    """Fetch Trump posts via trumpstruth.org RSS feed (no Cloudflare challenge).
+    
+    RSS feed supports ?start_date=YYYY-MM-DD parameter.
+    Each <item> has <title> (post text) and <pubDate> (RFC 2822 date).
+    """
     posts: list[str] = []
     try:
-        async with httpx.AsyncClient(headers=_HEADERS, timeout=timeout, follow_redirects=True) as client:
-            today_str = cutoff.strftime("%Y-%m-%d")
-            url = f"https://www.trumpstruth.org/search?query=&sort=desc&per_page=25&start_date={today_str}&end_date="
+        today_str = cutoff.strftime("%Y-%m-%d")
+        url = f"https://trumpstruth.org/feed?start_date={today_str}&per_page=25"
+        async with httpx.AsyncClient(headers=_RSS_HEADERS, timeout=timeout, follow_redirects=True) as client:
             resp = await client.get(url)
-            if resp.status_code not in (200, 301, 302):
-                log.warning("trumpstruth.org returned %s", resp.status_code)
-                return posts
-            soup = BeautifulSoup(resp.text, "html.parser")
-            # Find all timestamp links: [April 21, 2026, 9:23 AM](/statuses/12345)
-            ts_links = soup.find_all("a", href=re.compile(r"^/statuses/\d+$"))
-            log.info("trumpstruth.org: found %d status links", len(ts_links))
-            for ts_link in ts_links:
-                if not isinstance(ts_link, Tag):
-                    continue
-                time_str = ts_link.get_text(strip=True)
-                if not _TS_RE.match(time_str):
-                    continue
-                post_dt = _parse_post_time(time_str)
-                if post_dt is None:
-                    continue
-                # posts are newest-first; stop when older than cutoff
-                if post_dt < cutoff:
-                    break
-                # Iterate next siblings, looking only at Tag elements
-                text = None
-                for sibling in ts_link.next_siblings:
-                    if not isinstance(sibling, Tag):
-                        continue  # skip NavigableString / text nodes
-                    sibling_href = str(sibling.get("href") or "")
-                    sibling_name = str(sibling.name or "")
-                    # Skip 'Original Post' link (external truthsocial link)
-                    if sibling_name == "a" and ("truthsocial.com" in sibling_href or "statuses" in sibling_href):
-                        continue
-                    # Skip profile/name links pointing to /#
-                    if sibling_name == "a" and sibling_href == "/#":
-                        continue
-                    # If we hit the next post's timestamp link, stop
-                    if sibling_name == "a" and re.match(r"^/statuses/\d+$", sibling_href):
-                        break
-                    # Skip profile image links and short/empty elements
-                    sibling_text = sibling.get_text(separator=" ", strip=True)
-                    if not sibling_text or len(sibling_text) < 5:
-                        continue
-                    if "@realDonaldTrump" in sibling_text:
-                        continue
-                    if "Donald J. Trump" in sibling_text and len(sibling_text) < 30:
-                        continue
-                    # This should be the post content
-                    text = " ".join(sibling_text.split())
-                    break
-                if text:
-                    posts.append(text[:280])
-                if len(posts) >= 10:
-                    break
+        log.info("trumpstruth.org RSS status: %s, content-type: %s", resp.status_code, resp.headers.get("content-type", ""))
+        if resp.status_code != 200:
+            log.warning("trumpstruth.org RSS returned %s", resp.status_code)
+            return posts
+        root = ET.fromstring(resp.text)
+        channel = root.find("channel")
+        if channel is None:
+            log.warning("trumpstruth.org RSS: no <channel> element found")
+            return posts
+        items = channel.findall("item")
+        log.info("trumpstruth.org RSS: found %d items", len(items))
+        for item in items:
+            pub_date_el = item.find("pubDate")
+            title_el = item.find("title")
+            if pub_date_el is None or title_el is None:
+                continue
+            try:
+                pub_dt = parsedate_to_datetime(pub_date_el.text or "")
+                pub_dt = pub_dt.astimezone(timezone.utc)
+            except Exception:
+                continue
+            if pub_dt < cutoff:
+                continue
+            text = (title_el.text or "").strip()
+            if not text or len(text) < 5:
+                continue
+            posts.append(text[:280])
+            if len(posts) >= 10:
+                break
     except Exception as exc:  # noqa: BLE001
-        log.warning("trumpstruth.org fetch failed: %s", exc)
-    log.info("trumpstruth.org: collected %d posts", len(posts))
+        log.warning("trumpstruth.org RSS fetch failed: %s", exc)
+    log.info("trumpstruth.org RSS: collected %d posts", len(posts))
     return posts
 
 
@@ -138,17 +97,14 @@ async def get_news_context(timeout: httpx.Timeout | None = None) -> dict:
     """Return news bias, Trump posts and top headlines."""
     if timeout is None:
         timeout = httpx.Timeout(15.0)
-
     now = datetime.now(tz=timezone.utc)
-    # Use 8-hour cutoff for Trump posts to get recent ones
     trump_cutoff = now - timedelta(hours=8)
     finnhub_cutoff = now - timedelta(hours=4)
-
     context: dict = _default_news_context()
     top_headlines: list[str] = []
 
-    # Primary: scrape public archive (bypasses Cloudflare block on Truth Social)
-    trump_posts = await _fetch_trump_posts_from_archive(trump_cutoff, timeout)
+    # Fetch Trump posts via RSS (avoids Cloudflare block)
+    trump_posts = await _fetch_trump_posts_rss(trump_cutoff, timeout)
 
     finnhub_key = os.getenv("FINNHUB_API_KEY")
     if finnhub_key:
