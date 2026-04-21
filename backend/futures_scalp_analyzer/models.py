@@ -116,6 +116,11 @@ class FuturesScalpAnalysisResponse(BaseModel):
     final_recommendation_comment: str
     directional_score: float = 0.0
     momentum_bias: str = "neutral"
+    news_bias: str = "neutral"
+    news_bias_note: str = ""
+    trump_posts_count: int = 0
+    trump_posts_recent: list[str] = Field(default_factory=list)
+    top_headlines: list[str] = Field(default_factory=list)
     ema9: float | str | None = None
     ema20: float | str | None = None
     vwap: float | str | None = None

@@ -8,6 +8,7 @@ from typing import Any
 
 from .market_analysis import compute_market_context
 from .models import FuturesScalpAnalysisResponse, FuturesScalpIdeaRequest
+from .news_context import fetch_news_context
 from .price_feed import PriceFeed
 from .recommendations import compute_final_recommendation
 from .risk import evaluate_session_status, get_account_risk_template
@@ -194,6 +195,8 @@ def _build_gpt_fields(
     market_data_available: bool,
     session_state: dict[str, float | int | bool | str],
     final_recommendation: str,
+    news_bias: str = "neutral",
+    news_bias_note: str = "",
 ) -> dict[str, str]:
     def _fmt_number(value: float | None) -> str:
         if not market_data_available or value is None:
@@ -241,7 +244,8 @@ def _build_gpt_fields(
     why = (
         f"{symbol} is trading {price_context} the planned entry, which makes the current setup read as {entry_verdict} with a {trade_verdict} risk profile. "
         f"The structure targets {_format_dollars(reward_per_contract)} for {_format_dollars(risk_per_contract)} of risk, keeping the scalp disciplined for prop rules."
-        f" Directional momentum bias: {momentum_bias} (score: {directional_score:.0f}/100)."
+        f" Directional momentum bias: {momentum_bias} (score: {directional_score:.0f}/100). "
+        f"News bias: {news_bias}. {news_bias_note}".strip()
     )
     watch_out_for = "Do not widen the stop if momentum stalls near the entry zone."
     if verdict == "WAIT":
@@ -325,6 +329,8 @@ async def analyze_request(
             market_data_available=False,
             session_state=session_state,
             final_recommendation="pass",
+            news_bias="neutral",
+            news_bias_note="",
         )
         return FuturesScalpAnalysisResponse(
             symbol=request.symbol,
@@ -370,6 +376,11 @@ async def analyze_request(
             final_recommendation_comment=str(session_state["reason"]),
             directional_score=0.0,
             momentum_bias="neutral",
+            news_bias="neutral",
+            news_bias_note="",
+            trump_posts_count=0,
+            trump_posts_recent=[],
+            top_headlines=[],
             market_data_available=False,
             as_of=datetime.now(timezone.utc),
         )
@@ -398,15 +409,31 @@ async def analyze_request(
     bars_5m: list[dict] = []
     bars_15m: list[dict] = []
     daily_bars: list[dict] = []
+    news_context: dict[str, Any] = {
+        "overall_bias": "neutral",
+        "bias_note": "",
+        "trump_posts": [],
+        "headlines": [],
+    }
     try:
-        bars_1m, bars_5m, bars_15m, daily_bars = await asyncio.gather(
+        bars_1m, bars_5m, bars_15m, daily_bars, news_context = await asyncio.gather(
             price_feed.get_bars(request.symbol, "minute", 1, "day", 1),
             price_feed.get_bars(request.symbol, "minute", 5, "day", 2),
             price_feed.get_bars(request.symbol, "minute", 15, "day", 5),
             price_feed.get_bars(request.symbol, "daily", 1, "day", 5),
+            fetch_news_context(request.symbol),
         )
     except Exception:
         bars_1m, bars_5m, bars_15m, daily_bars = [], [], [], []
+        try:
+            news_context = await fetch_news_context(request.symbol)
+        except Exception:
+            news_context = {
+                "overall_bias": "neutral",
+                "bias_note": "",
+                "trump_posts": [],
+                "headlines": [],
+            }
 
     prior_day_high = float(daily_bars[-2]["high"]) if len(daily_bars) >= 2 else None
     prior_day_low = float(daily_bars[-2]["low"]) if len(daily_bars) >= 2 else None
@@ -496,6 +523,8 @@ async def analyze_request(
         market_data_available=bool(market_context.get("market_data_available", False)),
         session_state=session_state,
         final_recommendation=ctx["final_recommendation"],
+        news_bias=str(news_context.get("overall_bias", "neutral")),
+        news_bias_note=str(news_context.get("bias_note", "")),
     )
 
     return FuturesScalpAnalysisResponse(
@@ -538,6 +567,11 @@ async def analyze_request(
         final_recommendation_comment=ctx["final_recommendation_comment"],
         directional_score=round(directional_score, 1),
         momentum_bias=momentum_bias,
+        news_bias=str(news_context.get("overall_bias", "neutral")),
+        news_bias_note=str(news_context.get("bias_note", "")),
+        trump_posts_count=len(news_context.get("trump_posts", [])),
+        trump_posts_recent=[str(item.get("text", "")) for item in news_context.get("trump_posts", [])[:3] if item.get("text")],
+        top_headlines=[str(item.get("headline", "")) for item in news_context.get("headlines", [])[:3] if item.get("headline")],
         ema9=gpt_fields["ema9"],
         ema20=gpt_fields["ema20"],
         vwap=gpt_fields["vwap"],
