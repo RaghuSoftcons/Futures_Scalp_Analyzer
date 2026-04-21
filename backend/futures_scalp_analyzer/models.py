@@ -14,7 +14,7 @@ TradeMode = Literal["idea_eval", "position_mgmt"]
 TradeSession = Literal["RTH", "ETH"]
 Recommendation = Literal["take", "take only on pullback", "scalp only", "flatten", "pass", "unavailable"]
 EntryVerdict = Literal["attractive", "fair", "rich", "unavailable"]
-TradeVerdict = Literal["favorable", "neutral", "speculative", "avoid", "unavailable"]
+TradeVerdict = Literal["favorable", "neutral", "speculative", "avoid", "unavailable", "no_trade"]
 LiquidityScore = Literal["good", "acceptable", "weak"]
 
 
@@ -132,4 +132,7 @@ class FuturesScalpAnalysisResponse(BaseModel):
     prior_day_high: float | str | None = None
     prior_day_low: float | str | None = None
     market_data_available: bool = False
+    economic_event_warning: bool = False
+    economic_event_block: bool = False
+    next_economic_event: str = ""
     as_of: datetime

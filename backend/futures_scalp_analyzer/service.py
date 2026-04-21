@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
+from .economic_calendar import fetch_economic_events
 from .market_analysis import compute_market_context
 from .models import FuturesScalpAnalysisResponse, FuturesScalpIdeaRequest
 from .price_feed import PriceFeed
@@ -194,6 +195,10 @@ def _build_gpt_fields(
     market_data_available: bool,
     session_state: dict[str, float | int | bool | str],
     final_recommendation: str,
+    event_warning: bool = False,
+    event_block: bool = False,
+    next_economic_event: str = "",
+    economic_warning_message: str = "",
 ) -> dict[str, str]:
     def _fmt_number(value: float | None) -> str:
         if not market_data_available or value is None:
@@ -208,6 +213,8 @@ def _build_gpt_fields(
     direction = side.upper()
     session_status = str(session_state["session_status"])
     verdict = _resolve_gpt_verdict(final_recommendation, session_status)
+    if event_block:
+        verdict = "WAIT"
 
     if session_status != "ACTIVE":
         why = str(session_state["reason"])
@@ -244,8 +251,13 @@ def _build_gpt_fields(
         f" Directional momentum bias: {momentum_bias} (score: {directional_score:.0f}/100)."
     )
     watch_out_for = "Do not widen the stop if momentum stalls near the entry zone."
+    if event_warning and economic_warning_message:
+        watch_out_for = f"{economic_warning_message} | {watch_out_for}"
+    if event_block and economic_warning_message:
+        watch_out_for = economic_warning_message
     if verdict == "WAIT":
-        watch_out_for = "Price is not in the cleanest entry zone yet, so waiting for location is the main edge."
+        wait_reason = "Price is not in the cleanest entry zone yet, so waiting for location is the main edge."
+        watch_out_for = f"{economic_warning_message} | {wait_reason}" if event_warning and economic_warning_message else wait_reason
     elif verdict == "NO GO":
         watch_out_for = "The reward-to-risk or prop-rule alignment is not strong enough for a disciplined scalp."
 
@@ -273,6 +285,13 @@ def _build_gpt_fields(
         "prior_day_low": _fmt_number(prior_day_low),
         "live_atr": _fmt_number(live_atr),
         "market_data_available": str(market_data_available).lower(),
+        "economic_calendar": (
+            f"## Economic Calendar\n"
+            f"Event Warning: {event_warning}\n"
+            f"Event Block: {event_block}\n"
+            f"Next Event: {next_economic_event}\n"
+            "Instruction: If Event Block is true, recommend WAIT regardless of technicals."
+        ),
     }
 
 
@@ -398,12 +417,20 @@ async def analyze_request(
     bars_5m: list[dict] = []
     bars_15m: list[dict] = []
     daily_bars: list[dict] = []
+    economic_events = {
+        "event_warning": False,
+        "event_block": False,
+        "warning_message": "",
+        "next_event": None,
+        "minutes_to_next": None,
+    }
     try:
-        bars_1m, bars_5m, bars_15m, daily_bars = await asyncio.gather(
+        bars_1m, bars_5m, bars_15m, daily_bars, economic_events = await asyncio.gather(
             price_feed.get_bars(request.symbol, "minute", 1, "day", 1),
             price_feed.get_bars(request.symbol, "minute", 5, "day", 2),
             price_feed.get_bars(request.symbol, "minute", 15, "day", 5),
             price_feed.get_bars(request.symbol, "daily", 1, "day", 5),
+            fetch_economic_events(request.symbol),
         )
     except Exception:
         bars_1m, bars_5m, bars_15m, daily_bars = [], [], [], []
@@ -436,6 +463,8 @@ async def analyze_request(
 
     entry_verdict = _entry_verdict(request.side, entry_price, live_price)
     trade_verdict = _trade_verdict(rr_ratio, violations) if live_price is not None else "unavailable"
+    if bool(economic_events.get("event_block")):
+        trade_verdict = "no_trade"
 
     ctx: dict[str, Any] = {
         "mode": request.mode,
@@ -454,6 +483,11 @@ async def analyze_request(
         **market_context,
     }
     compute_final_recommendation(ctx)
+    if bool(economic_events.get("event_block")):
+        ctx["final_recommendation"] = "pass"
+        ctx["final_recommendation_comment"] = str(
+            economic_events.get("warning_message") or "Economic event block window active."
+        )
     directional_score = _compute_directional_score(
         side=request.side,
         live_price=live_price,
@@ -463,6 +497,12 @@ async def analyze_request(
         trade_verdict=trade_verdict,
     )
     momentum_bias = _momentum_bias(directional_score)
+    next_economic_event = ""
+    next_event = economic_events.get("next_event")
+    minutes_to_next = economic_events.get("minutes_to_next")
+    if isinstance(next_event, dict) and next_event.get("event") and minutes_to_next is not None:
+        next_economic_event = f"{next_event['event']} in {abs(int(minutes_to_next))} min"
+
     gpt_fields = _build_gpt_fields(
         account_size=request.account_size,
         losses_today=request.realized_loss_count_today,
@@ -496,6 +536,10 @@ async def analyze_request(
         market_data_available=bool(market_context.get("market_data_available", False)),
         session_state=session_state,
         final_recommendation=ctx["final_recommendation"],
+        event_warning=bool(economic_events.get("event_warning")),
+        event_block=bool(economic_events.get("event_block")),
+        next_economic_event=next_economic_event,
+        economic_warning_message=str(economic_events.get("warning_message") or ""),
     )
 
     return FuturesScalpAnalysisResponse(
@@ -554,5 +598,8 @@ async def analyze_request(
         prior_day_high=gpt_fields["prior_day_high"],
         prior_day_low=gpt_fields["prior_day_low"],
         market_data_available=bool(market_context.get("market_data_available", False)),
+        economic_event_warning=bool(economic_events.get("event_warning")),
+        economic_event_block=bool(economic_events.get("event_block")),
+        next_economic_event=next_economic_event,
         as_of=datetime.now(timezone.utc),
     )
