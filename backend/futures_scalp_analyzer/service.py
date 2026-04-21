@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
+from .market_analysis import compute_market_context
 from .models import FuturesScalpAnalysisResponse, FuturesScalpIdeaRequest
 from .price_feed import PriceFeed
 from .recommendations import compute_final_recommendation
@@ -301,6 +302,7 @@ async def analyze_request(
             final_recommendation_comment=str(session_state["reason"]),
             directional_score=0.0,
             momentum_bias="neutral",
+            market_data_available=False,
             as_of=datetime.now(timezone.utc),
         )
 
@@ -324,13 +326,39 @@ async def analyze_request(
             "final_recommendation_comment": "Live Schwab quote timed out. Retry shortly.",
             "as_of": datetime.now(timezone.utc).isoformat(),
         }
+    bars_1m: list[dict] = []
+    bars_5m: list[dict] = []
+    bars_15m: list[dict] = []
+    daily_bars: list[dict] = []
+    try:
+        bars_1m, bars_5m, bars_15m, daily_bars = await asyncio.gather(
+            price_feed.get_bars(request.symbol, "minute", 1, "day", 1),
+            price_feed.get_bars(request.symbol, "minute", 5, "day", 2),
+            price_feed.get_bars(request.symbol, "minute", 15, "day", 5),
+            price_feed.get_bars(request.symbol, "daily", 1, "day", 5),
+        )
+    except Exception:
+        bars_1m, bars_5m, bars_15m, daily_bars = [], [], [], []
+
+    prior_day_high = float(daily_bars[-2]["high"]) if len(daily_bars) >= 2 else None
+    prior_day_low = float(daily_bars[-2]["low"]) if len(daily_bars) >= 2 else None
+    market_context = compute_market_context(
+        bars_1m,
+        bars_5m,
+        bars_15m,
+        request.symbol,
+        prior_day_high=prior_day_high,
+        prior_day_low=prior_day_low,
+    )
+
     entry_price, stop_price, target_price = _resolve_trade_levels(request, spec, risk_template, live_price)
     risk_points = _risk_points(entry_price, stop_price)
     reward_points = _reward_points(entry_price, target_price)
     risk_per_contract = risk_points * spec.point_value
     reward_per_contract = reward_points * spec.point_value
     rr_ratio = reward_per_contract / risk_per_contract if risk_per_contract else 0.0
-    atr_multiple_risk = risk_points / spec.atr_reference if spec.atr_reference else 0.0
+    atr_reference = float(market_context.get("live_atr") or spec.atr_reference)
+    atr_multiple_risk = risk_points / atr_reference if atr_reference else 0.0
 
     violations = {
         "per_trade_risk_exceeds_limit": risk_per_contract * request.contracts > risk_template["per_trade_risk"],
@@ -343,6 +371,7 @@ async def analyze_request(
 
     ctx: dict[str, Any] = {
         "mode": request.mode,
+        "side": request.side,
         "live_price": live_price,
         "entry_verdict": entry_verdict,
         "trade_verdict": trade_verdict,
@@ -354,6 +383,7 @@ async def analyze_request(
         "is_far_from_key_levels": _is_far_from_key_levels(entry_price, spec, live_price),
         "final_recommendation": None,
         "final_recommendation_comment": "",
+        **market_context,
     }
     compute_final_recommendation(ctx)
     directional_score = _compute_directional_score(
@@ -426,5 +456,21 @@ async def analyze_request(
         final_recommendation_comment=ctx["final_recommendation_comment"],
         directional_score=round(directional_score, 1),
         momentum_bias=momentum_bias,
+        ema9=market_context.get("ema9"),
+        ema20=market_context.get("ema20"),
+        vwap=market_context.get("vwap"),
+        rsi=market_context.get("rsi"),
+        live_atr=market_context.get("live_atr"),
+        volume_ratio=market_context.get("volume_ratio"),
+        trend=market_context.get("trend"),
+        market_structure=market_context.get("market_structure"),
+        vwap_position=market_context.get("vwap_position"),
+        rsi_condition=market_context.get("rsi_condition"),
+        volume_condition=market_context.get("volume_condition"),
+        session_high=market_context.get("session_high"),
+        session_low=market_context.get("session_low"),
+        prior_day_high=market_context.get("prior_day_high"),
+        prior_day_low=market_context.get("prior_day_low"),
+        market_data_available=bool(market_context.get("market_data_available", False)),
         as_of=datetime.now(timezone.utc),
     )
