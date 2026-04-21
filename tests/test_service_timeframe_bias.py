@@ -45,16 +45,16 @@ def test_compute_timeframe_bias_mixed_returns_neutral():
 
 
 def test_compute_timeframe_alignment_all_long():
-    assert _compute_timeframe_alignment("long", "long", "long") == "aligned_long"
+    assert _compute_timeframe_alignment("long", "long", "long", "long") == "aligned_long"
 
 
 def test_compute_timeframe_alignment_all_short():
-    assert _compute_timeframe_alignment("short", "short", "short") == "aligned_short"
+    assert _compute_timeframe_alignment("short", "short", "short", "short") == "aligned_short"
 
 
 def test_compute_timeframe_alignment_mixed():
-    assert _compute_timeframe_alignment("short", "long", "long") == "mixed"
+    assert _compute_timeframe_alignment("short", "long", "long", "short") == "mixed"
 
 
 def test_compute_timeframe_alignment_neutral_when_two_or_more_neutral():
-    assert _compute_timeframe_alignment("neutral", "long", "neutral") == "neutral"
+    assert _compute_timeframe_alignment("neutral", "long", "short", "neutral") == "neutral"
