@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 
 UNAVAILABLE_CONTEXT: dict[str, float | str | bool | None] = {
@@ -95,19 +95,19 @@ def _market_structure(bars_15m: list[dict]) -> str:
 
 
 def _session_filter_today(bars_1m: list[dict]) -> list[dict]:
-    today = datetime.now(UTC).date()
+    today = datetime.now(timezone.utc).date()
     filtered: list[dict] = []
     for bar in bars_1m:
         raw_dt = bar.get("datetime")
         try:
             if isinstance(raw_dt, (int, float)):
-                dt = datetime.fromtimestamp(float(raw_dt) / (1000.0 if float(raw_dt) > 1_000_000_000_000 else 1.0), tz=UTC)
+                dt = datetime.fromtimestamp(float(raw_dt) / (1000.0 if float(raw_dt) > 1_000_000_000_000 else 1.0), tz=timezone.utc)
             else:
                 dt = datetime.fromisoformat(str(raw_dt).replace("Z", "+00:00"))
                 if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=UTC)
+                    dt = dt.replace(tzinfo=timezone.utc)
                 else:
-                    dt = dt.astimezone(UTC)
+                    dt = dt.astimezone(timezone.utc)
         except Exception:
             continue
         if dt.date() == today:

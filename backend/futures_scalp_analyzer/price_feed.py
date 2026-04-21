@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from abc import ABC, abstractmethod
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import os
 from typing import Any, Mapping
@@ -122,7 +122,7 @@ class ActiveContractResolver:
         self.refresh(force=True)
 
     def refresh(self, force: bool = False) -> dict[str, dict[str, str | None]]:
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         if (
             not force
             and self._cache
@@ -467,7 +467,7 @@ class SchwabQuotePriceFeed(PriceFeed):
             timestamp_value = float(raw_timestamp)
             if timestamp_value > 1_000_000_000_000:
                 timestamp_value /= 1000.0
-            return datetime.fromtimestamp(timestamp_value, tz=UTC).isoformat().replace("+00:00", "Z")
+            return datetime.fromtimestamp(timestamp_value, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
         if isinstance(raw_timestamp, str):
             return raw_timestamp
