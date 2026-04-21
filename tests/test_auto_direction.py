@@ -65,6 +65,9 @@ def test_analyze_request_auto_selects_best_direction(monkeypatch):
     assert isinstance(result, FuturesScalpAnalysisResponse)
     assert result.side == "short"
     assert result.direction == "SHORT"
+    assert result.requested_side is None
+    assert result.auto_selected is True
+    assert result.evaluated_sides == ["long", "short"]
     assert result.final_recommendation == "take"
 
 
@@ -80,3 +83,6 @@ def test_analyze_request_preserves_explicit_direction(monkeypatch):
     assert isinstance(result, FuturesScalpAnalysisResponse)
     assert result.side == "long"
     assert result.direction == "LONG"
+    assert result.requested_side == "long"
+    assert result.auto_selected is False
+    assert result.evaluated_sides == ["long"]

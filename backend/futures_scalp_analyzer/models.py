@@ -57,6 +57,9 @@ class FuturesScalpAnalysisResponse(BaseModel):
     symbol: SupportedSymbol
     side: TradeSide
     direction: str
+    requested_side: TradeSide | None = None
+    auto_selected: bool = False
+    evaluated_sides: list[TradeSide] = Field(default_factory=list)
     entry_price: float | None = None
     stop_price: float | None = None
     target_price: float | None = None

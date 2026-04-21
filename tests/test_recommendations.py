@@ -173,3 +173,26 @@ def test_long_reversal_near_session_low_with_strong_bounce_returns_long():
     assert decision["final_recommendation"] == "LONG"
     assert decision["setup_type"] == "REVERSAL"
     assert compute_final_recommendation(ctx) == "scalp only"
+
+
+def test_long_pullback_above_vwap_uptrend_returns_long():
+    ctx = make_ctx(
+        side="long",
+        market_data_available=True,
+        live_price=19900.0,
+        vwap=19880.0,
+        trend="uptrend",
+        session_low=19780.0,
+        session_high=19910.0,
+        live_atr=100.0,
+        ema9=19898.0,
+        rsi=56.0,
+        vwap_position="above_vwap",
+        volume_condition="normal_volume",
+    )
+    assert detect_pullback(ctx) is True
+    assert detect_extension(ctx) is False
+    decision = compute_scalper_decision(ctx)
+    assert decision["final_recommendation"] == "LONG"
+    assert decision["setup_type"] == "PULLBACK"
+    assert compute_final_recommendation(ctx) == "take"

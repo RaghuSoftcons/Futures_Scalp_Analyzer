@@ -101,6 +101,20 @@ def _strong_upward_impulse(ctx: dict) -> bool:
     return ema9 is not None and live_price >= ema9 and bounce_from_low >= minimum_pullback
 
 
+def _upward_continuation(ctx: dict) -> bool:
+    live_price = _to_float(ctx.get("live_price"))
+    ema9 = _to_float(ctx.get("ema9"))
+    rsi = _to_float(ctx.get("rsi"))
+    volume_condition = ctx.get("volume_condition")
+    if live_price is None:
+        return False
+    if ema9 is not None and live_price >= ema9:
+        return True
+    if volume_condition == "high_volume":
+        return True
+    return rsi is not None and rsi >= 50.0
+
+
 def _near_session_low(ctx: dict) -> bool:
     live_price = _to_float(ctx.get("live_price"))
     session_low = _to_float(ctx.get("session_low"))
@@ -180,6 +194,36 @@ def compute_scalper_decision(ctx: dict) -> dict[str, str]:
         }
 
     if side == "long":
+        if extension_detected:
+            return {
+                "final_recommendation": "NO TRADE",
+                "reason": "Price is extending without a pullback, so this is too late for a disciplined long scalp entry.",
+                "entry_quality": "POOR",
+                "setup_type": "EXTENSION",
+            }
+
+        if vwap is not None and live_price > vwap and trend == "uptrend":
+            if not pullback_detected:
+                return {
+                    "final_recommendation": "NO TRADE",
+                    "reason": "Trend-following long is valid only after a pullback; chasing the move at extension is low quality.",
+                    "entry_quality": "POOR",
+                    "setup_type": "EXTENSION",
+                }
+            if not _upward_continuation(ctx):
+                return {
+                    "final_recommendation": "NO TRADE",
+                    "reason": "Pullback happened, but continuation back up has not resumed yet.",
+                    "entry_quality": "AVERAGE",
+                    "setup_type": "PULLBACK",
+                }
+            return {
+                "final_recommendation": "LONG",
+                "reason": "Price is above VWAP in an uptrend, and the pullback is resolving with continuation for a trend long scalp.",
+                "entry_quality": "GOOD",
+                "setup_type": "PULLBACK",
+            }
+
         strong_impulse = _strong_upward_impulse(ctx)
         if rsi is None or rsi > 30.0:
             return {

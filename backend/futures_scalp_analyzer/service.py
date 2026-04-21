@@ -496,6 +496,9 @@ async def _analyze_request_for_side(
             symbol=request.symbol,
             side=request.side,
             direction=request.side.upper(),
+            requested_side=request.side,
+            auto_selected=False,
+            evaluated_sides=[request.side],
             entry_price=entry_price,
             stop_price=stop_price,
             target_price=target_price,
@@ -603,6 +606,9 @@ async def _analyze_request_for_side(
             symbol=request.symbol,
             side=request.side,
             direction=gpt_fields["direction"],
+            requested_side=request.side,
+            auto_selected=False,
+            evaluated_sides=[request.side],
             entry_price=entry_price,
             stop_price=stop_price,
             target_price=target_price,
@@ -830,6 +836,9 @@ async def _analyze_request_for_side(
         symbol=request.symbol,
         side=request.side,
         direction=gpt_fields["direction"],
+        requested_side=request.side,
+        auto_selected=False,
+        evaluated_sides=[request.side],
         entry_price=entry_price,
         stop_price=stop_price,
         target_price=target_price,
@@ -918,7 +927,12 @@ async def analyze_request(
     price_feed: PriceFeed,
 ) -> FuturesScalpAnalysisResponse | dict[str, Any]:
     if request.side is not None:
-        return await _analyze_request_for_side(request, price_feed)
+        response = await _analyze_request_for_side(request, price_feed)
+        if isinstance(response, FuturesScalpAnalysisResponse):
+            response.requested_side = request.side
+            response.auto_selected = False
+            response.evaluated_sides = [request.side]
+        return response
 
     if request.mode == "position_mgmt":
         return {
@@ -937,4 +951,9 @@ async def analyze_request(
         _analyze_request_for_side(long_request, price_feed),
         _analyze_request_for_side(short_request, price_feed),
     )
-    return _select_preferred_response(long_response, short_response)
+    selected_response = _select_preferred_response(long_response, short_response)
+    if isinstance(selected_response, FuturesScalpAnalysisResponse):
+        selected_response.requested_side = None
+        selected_response.auto_selected = True
+        selected_response.evaluated_sides = ["long", "short"]
+    return selected_response
