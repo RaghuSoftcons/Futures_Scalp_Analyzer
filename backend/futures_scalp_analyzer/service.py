@@ -6,11 +6,14 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
+from .economic_calendar import fetch_economic_events
 from .market_analysis import compute_market_context
 from .models import FuturesScalpAnalysisResponse, FuturesScalpIdeaRequest
+from .news_context import fetch_news_context
 from .price_feed import PriceFeed
 from .recommendations import compute_final_recommendation
 from .risk import evaluate_session_status, get_account_risk_template
+from .session_guard import check_session_allowed
 from .symbols import SUPPORTED_SYMBOLS, SymbolSpec
 
 
@@ -82,10 +85,10 @@ def _compute_timeframe_bias(bars: list[dict]) -> str:
     return "neutral"
 
 
-def _compute_timeframe_alignment(bias_1m: str, bias_5m: str, bias_15m: str) -> str:
-    biases = [bias_1m, bias_5m, bias_15m]
+def _compute_timeframe_alignment(bias_1m: str, bias_3m: str, bias_5m: str, bias_15m: str) -> str:
+    biases = [bias_1m, bias_3m, bias_5m, bias_15m]
     neutral_count = sum(1 for bias in biases if bias == "neutral")
-    if neutral_count >= 2 or neutral_count == 3:
+    if neutral_count >= 2:
         return "neutral"
     if all(bias == "long" for bias in biases):
         return "aligned_long"
@@ -273,9 +276,16 @@ def _build_gpt_fields(
     live_atr: float | None,
     market_data_available: bool,
     bias_1m: str,
+    bias_3m: str,
     bias_5m: str,
     bias_15m: str,
     timeframe_alignment: str,
+    news_bias: str,
+    news_bias_note: str,
+    trump_posts_recent: list[str],
+    top_headlines: list[str],
+    economic_event_warning: bool,
+    next_economic_event: str,
     session_state: dict[str, float | int | bool | str],
     final_recommendation: str,
 ) -> dict[str, str]:
@@ -322,10 +332,13 @@ def _build_gpt_fields(
             "timeframe_bias": (
                 "## Timeframe Bias\n"
                 f"1-min: {bias_1m}\n"
+                f"3-min: {bias_3m}\n"
                 f"5-min: {bias_5m}\n"
                 f"15-min: {bias_15m}\n"
                 f"Alignment: {timeframe_alignment}"
             ),
+            "news_context": "## News & Geopolitical Context\nunavailable",
+            "economic_calendar": "## Economic Calendar\nunavailable",
         }
 
     price_context = "above" if live_price is not None and live_price > entry_price else "below"
@@ -371,11 +384,26 @@ def _build_gpt_fields(
         "timeframe_bias": (
             "## Timeframe Bias\n"
             f"1-min: {bias_1m}\n"
+            f"3-min: {bias_3m}\n"
             f"5-min: {bias_5m}\n"
             f"15-min: {bias_15m}\n"
             f"Alignment: {timeframe_alignment}\n\n"
             "If alignment is aligned_long or aligned_short, treat it as strong confirmation. "
             "If alignment is mixed, explicitly call out conflict in watch_out_for."
+        ),
+        "news_context": (
+            "## News & Geopolitical Context\n"
+            f"News bias: {news_bias}\n"
+            f"News note: {news_bias_note or 'none'}\n"
+            f"Recent Truth Social posts: {', '.join(trump_posts_recent) if trump_posts_recent else 'none'}\n"
+            f"Top headlines: {', '.join(top_headlines) if top_headlines else 'none'}\n\n"
+            "Use news/geopolitical context to adjust conviction, especially if it conflicts with technicals."
+        ),
+        "economic_calendar": (
+            "## Economic Calendar\n"
+            f"Event warning active: {economic_event_warning}\n"
+            f"Next economic event: {next_economic_event or 'none'}\n\n"
+            "If warning is active, emphasize caution and reduced aggressiveness."
         ),
     }
 
@@ -386,6 +414,63 @@ async def analyze_request(
 ) -> FuturesScalpAnalysisResponse | dict[str, Any]:
     spec = SUPPORTED_SYMBOLS[request.symbol]
     risk_template = get_account_risk_template(request.account_size)
+    session_guard = check_session_allowed(
+        account_size=request.account_size,
+        losses_today=request.realized_loss_count_today,
+        pnl_today=request.realized_pnl_today,
+    )
+    if not session_guard["allowed"]:
+        entry_price, stop_price, target_price = _resolve_trade_levels(request, spec, risk_template, None)
+        return FuturesScalpAnalysisResponse(
+            symbol=request.symbol,
+            side=request.side,
+            direction=request.side.upper(),
+            entry_price=entry_price,
+            stop_price=stop_price,
+            target_price=target_price,
+            contracts=request.contracts,
+            tick_value=spec.tick_value,
+            point_value=spec.point_value,
+            risk_per_contract=0.0,
+            reward_per_contract=0.0,
+            rr_ratio=0.0,
+            atr_multiple_risk=0.0,
+            live_price=None,
+            distance_entry_to_live=None,
+            entry_verdict="unavailable",
+            trade_verdict="avoid",
+            liquidity_score=spec.liquidity_score,
+            risk_rule_violations={
+                "per_trade_risk_exceeds_limit": False,
+                "max_loss_trades_reached": request.realized_loss_count_today >= 3,
+                "daily_profit_target_reached": request.realized_pnl_today >= risk_template["daily_profit_target"],
+            },
+            realized_pnl_today=request.realized_pnl_today,
+            realized_loss_count_today=request.realized_loss_count_today,
+            daily_profit_target=risk_template["daily_profit_target"],
+            daily_loss_limit=risk_template["daily_loss_limit"],
+            per_trade_risk_limit=risk_template["per_trade_risk"],
+            per_trade_profit_target=risk_template["per_trade_target"],
+            active_contract=None,
+            verdict="STOP TRADING",
+            entry_zone="N/A",
+            stop_loss="N/A",
+            target="N/A",
+            rr_ratio_display="N/A",
+            why=str(session_guard["reason"]),
+            watch_out_for="Session is LOCKED by the daily loss guard.",
+            account_summary=(
+                f"Account: ${request.account_size:,} | Losses today: {request.realized_loss_count_today}/3 | "
+                f"P&L today: {_format_dollars(request.realized_pnl_today)}"
+            ),
+            session_status="LOCKED",
+            final_recommendation="pass",
+            final_recommendation_comment=str(session_guard["reason"]),
+            daily_loss_pct=float(session_guard["daily_loss_pct"]),
+            daily_loss_limit_pct=float(session_guard["daily_loss_limit_pct"]),
+            market_data_available=False,
+            as_of=datetime.now(timezone.utc),
+        )
     session_state = evaluate_session_status(
         request.account_size,
         request.realized_loss_count_today,
@@ -428,9 +513,16 @@ async def analyze_request(
             live_atr=None,
             market_data_available=False,
             bias_1m="neutral",
+            bias_3m="neutral",
             bias_5m="neutral",
             bias_15m="neutral",
             timeframe_alignment="neutral",
+            news_bias="neutral",
+            news_bias_note="",
+            trump_posts_recent=[],
+            top_headlines=[],
+            economic_event_warning=False,
+            next_economic_event="",
             session_state=session_state,
             final_recommendation="pass",
         )
@@ -473,15 +565,18 @@ async def analyze_request(
             why=gpt_fields["why"],
             watch_out_for=gpt_fields["watch_out_for"],
             account_summary=gpt_fields["account_summary"],
-            session_status=str(session_state["session_status"]),
             final_recommendation="pass",
             final_recommendation_comment=str(session_state["reason"]),
             directional_score=0.0,
             momentum_bias="neutral",
             bias_1m="neutral",
+            bias_3m="neutral",
             bias_5m="neutral",
             bias_15m="neutral",
             timeframe_alignment="neutral",
+            daily_loss_pct=float(session_guard["daily_loss_pct"]),
+            daily_loss_limit_pct=float(session_guard["daily_loss_limit_pct"]),
+            session_status=str(session_state["session_status"]),
             market_data_available=False,
             as_of=datetime.now(timezone.utc),
         )
@@ -507,32 +602,43 @@ async def analyze_request(
             "as_of": datetime.now(timezone.utc).isoformat(),
         }
     bars_1m: list[dict] = []
+    bars_3m: list[dict] = []
     bars_5m: list[dict] = []
     bars_15m: list[dict] = []
     daily_bars: list[dict] = []
-    bars_results = await asyncio.gather(
+    bars_1m_result, bars_3m_result, bars_5m_result, bars_15m_result, daily_bars_result, news_context, economic_context = await asyncio.gather(
         price_feed.get_bars(request.symbol, "minute", 1, "day", 1),
+        price_feed.get_bars(request.symbol, "minute", 3, "day", 2),
         price_feed.get_bars(request.symbol, "minute", 5, "day", 2),
         price_feed.get_bars(request.symbol, "minute", 15, "day", 5),
         price_feed.get_bars(request.symbol, "daily", 1, "day", 5),
+        fetch_news_context(request.symbol),
+        fetch_economic_events(request.symbol),
         return_exceptions=True,
     )
-    for idx, result in enumerate(bars_results):
+    for idx, result in enumerate([bars_1m_result, bars_3m_result, bars_5m_result, bars_15m_result, daily_bars_result]):
         if isinstance(result, Exception):
             continue
         if idx == 0:
             bars_1m = result
         elif idx == 1:
-            bars_5m = result
+            bars_3m = result
         elif idx == 2:
+            bars_5m = result
+        elif idx == 3:
             bars_15m = result
         else:
             daily_bars = result
+    if isinstance(news_context, Exception):
+        news_context = {}
+    if isinstance(economic_context, Exception):
+        economic_context = {}
 
     bias_1m = _compute_timeframe_bias(bars_1m)
+    bias_3m = _compute_timeframe_bias(bars_3m)
     bias_5m = _compute_timeframe_bias(bars_5m)
     bias_15m = _compute_timeframe_bias(bars_15m)
-    timeframe_alignment = _compute_timeframe_alignment(bias_1m, bias_5m, bias_15m)
+    timeframe_alignment = _compute_timeframe_alignment(bias_1m, bias_3m, bias_5m, bias_15m)
 
     prior_day_high = float(daily_bars[-2]["high"]) if len(daily_bars) >= 2 else None
     prior_day_low = float(daily_bars[-2]["low"]) if len(daily_bars) >= 2 else None
@@ -580,6 +686,9 @@ async def analyze_request(
         **market_context,
     }
     compute_final_recommendation(ctx)
+    if bool(economic_context.get("event_block")):
+        ctx["final_recommendation"] = "pass"
+        ctx["final_recommendation_comment"] = str(economic_context.get("warning_message") or "Economic event block active.")
     directional_score = _compute_directional_score(
         side=request.side,
         live_price=live_price,
@@ -621,12 +730,26 @@ async def analyze_request(
         live_atr=market_context.get("live_atr"),
         market_data_available=bool(market_context.get("market_data_available", False)),
         bias_1m=bias_1m,
+        bias_3m=bias_3m,
         bias_5m=bias_5m,
         bias_15m=bias_15m,
         timeframe_alignment=timeframe_alignment,
+        news_bias=str(news_context.get("news_bias", "neutral")),
+        news_bias_note=str(news_context.get("news_bias_note", "")),
+        trump_posts_recent=list(news_context.get("trump_posts_recent", [])),
+        top_headlines=list(news_context.get("top_headlines", [])),
+        economic_event_warning=bool(economic_context.get("event_warning", False)),
+        next_economic_event=str(economic_context.get("next_event", "")),
         session_state=session_state,
         final_recommendation=ctx["final_recommendation"],
     )
+    watch_out_for = gpt_fields["watch_out_for"]
+    if bool(economic_context.get("event_warning")):
+        warning_message = str(economic_context.get("warning_message") or "Economic event approaching.")
+        watch_out_for = f"{warning_message} {watch_out_for}".strip()
+    if bool(economic_context.get("event_block")):
+        warning_message = str(economic_context.get("warning_message") or "Economic event block active.")
+        watch_out_for = f"{watch_out_for} {warning_message}".strip()
 
     return FuturesScalpAnalysisResponse(
         symbol=request.symbol,
@@ -661,7 +784,7 @@ async def analyze_request(
         target=gpt_fields["target"],
         rr_ratio_display=gpt_fields["rr_ratio_display"],
         why=gpt_fields["why"],
-        watch_out_for=gpt_fields["watch_out_for"],
+        watch_out_for=watch_out_for,
         account_summary=gpt_fields["account_summary"],
         session_status=str(session_state["session_status"]),
         final_recommendation=ctx["final_recommendation"],
@@ -669,9 +792,20 @@ async def analyze_request(
         directional_score=round(directional_score, 1),
         momentum_bias=momentum_bias,
         bias_1m=bias_1m,
+        bias_3m=bias_3m,
         bias_5m=bias_5m,
         bias_15m=bias_15m,
         timeframe_alignment=timeframe_alignment,
+        news_bias=str(news_context.get("news_bias", "neutral")),
+        news_bias_note=str(news_context.get("news_bias_note", "")),
+        trump_posts_count=int(news_context.get("trump_posts_count", 0)),
+        trump_posts_recent=list(news_context.get("trump_posts_recent", [])),
+        top_headlines=list(news_context.get("top_headlines", [])),
+        economic_event_warning=bool(economic_context.get("event_warning", False)),
+        economic_event_block=bool(economic_context.get("event_block", False)),
+        next_economic_event=str(economic_context.get("next_event", "")),
+        daily_loss_pct=float(session_guard["daily_loss_pct"]),
+        daily_loss_limit_pct=float(session_guard["daily_loss_limit_pct"]),
         ema9=gpt_fields["ema9"],
         ema20=gpt_fields["ema20"],
         vwap=gpt_fields["vwap"],

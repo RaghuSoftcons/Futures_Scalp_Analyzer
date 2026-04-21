@@ -117,9 +117,20 @@ class FuturesScalpAnalysisResponse(BaseModel):
     directional_score: float = 0.0
     momentum_bias: str = "neutral"
     bias_1m: str = "neutral"
+    bias_3m: str = "neutral"
     bias_5m: str = "neutral"
     bias_15m: str = "neutral"
     timeframe_alignment: str = "neutral"
+    news_bias: str = "neutral"
+    news_bias_note: str = ""
+    trump_posts_count: int = 0
+    trump_posts_recent: list[str] = Field(default_factory=list)
+    top_headlines: list[str] = Field(default_factory=list)
+    economic_event_warning: bool = False
+    economic_event_block: bool = False
+    next_economic_event: str = ""
+    daily_loss_pct: float = 0.0
+    daily_loss_limit_pct: float = 3.0
     ema9: float | str | None = None
     ema20: float | str | None = None
     vwap: float | str | None = None

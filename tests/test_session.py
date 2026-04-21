@@ -46,3 +46,16 @@ def test_session_endpoint_returns_expected_shape():
         "dollars_to_limit": 450.0,
         "session_status": "ACTIVE",
     }
+
+
+def test_locked_when_daily_loss_guard_breached():
+    request = FuturesScalpIdeaRequest(
+        symbol="ES",
+        side="long",
+        account_size=50000,
+        realized_pnl_today=-1600.0,
+        realized_loss_count_today=1,
+    )
+    response = asyncio.run(analyze_request(request, StaticPriceFeed({"ES": 5300.0})))
+    assert response.session_status == "LOCKED"
+    assert response.verdict == "STOP TRADING"
