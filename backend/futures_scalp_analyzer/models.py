@@ -148,3 +148,5 @@ class FuturesScalpAnalysisResponse(BaseModel):
     prior_day_low: float | str | None = None
     market_data_available: bool = False
     as_of: datetime
+    analysis_long: str = ""
+    analysis_short: str = ""
