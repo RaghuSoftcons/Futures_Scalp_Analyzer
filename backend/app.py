@@ -111,7 +111,7 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
     async def analyze(
         request: FuturesScalpIdeaRequest,
         feed: PriceFeed = Depends(get_price_feed),
-    ) -> FuturesScalpAnalysisResponse | JSONResponse:
+    ) -> FuturesScalpAnalysisResponse:
         try:
             return await analyze_request(request, feed)
         except Exception as e:
@@ -129,7 +129,7 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
     async def position(
         request: FuturesScalpIdeaRequest,
         feed: PriceFeed = Depends(get_price_feed),
-    ) -> FuturesScalpAnalysisResponse | JSONResponse:
+    ) -> FuturesScalpAnalysisResponse:
         try:
             position_request = request.model_copy(update={"mode": "position_mgmt"})
             return await analyze_request(position_request, feed)
