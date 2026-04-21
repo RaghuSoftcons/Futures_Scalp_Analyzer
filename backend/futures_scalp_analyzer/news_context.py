@@ -67,11 +67,10 @@ def _parse_post_time(time_str: str) -> datetime | None:
 
 
 async def _fetch_trump_posts_from_archive(cutoff: datetime, timeout: httpx.Timeout) -> list[str]:
-    """Scrape trumpstruth.org - public archive, not blocked by Cloudflare.
-    DOM is flat inside #main-body. Each post has:
-      <a href='/statuses/N'>timestamp</a>  <- timestamp link
-      ... (other sibling tags like 'Original Post' link) ...
-      <div/p>post text</div>               <- post content
+    """Scrape trumpstruth.org - public archive.
+    DOM is flat inside #main-body. Each post block:
+      [profile link] [name link] [@handle link] [dot span] [timestamp link /statuses/N] [Original Post link]
+      [post text div]
     Walk forward from each timestamp link using Tag instances only."""
     posts: list[str] = []
     try:
@@ -80,60 +79,55 @@ async def _fetch_trump_posts_from_archive(cutoff: datetime, timeout: httpx.Timeo
             if resp.status_code != 200:
                 log.warning("trumpstruth.org returned %s", resp.status_code)
                 return posts
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Find all timestamp links: <a href="/statuses/12345">April 21, 2026, 9:23 AM</a>
-        ts_links = soup.find_all("a", href=re.compile(r"^/statuses/\d+$"))
-        log.info("trumpstruth.org: found %d status links", len(ts_links))
-
-        for ts_link in ts_links:
-            if not isinstance(ts_link, Tag):
-                continue
-            time_str = ts_link.get_text(strip=True)
-            if not _TS_RE.match(time_str):
-                continue
-
-            post_dt = _parse_post_time(time_str)
-            if post_dt is None:
-                continue
-            if post_dt < cutoff:
-                break  # posts are newest-first; stop when older than cutoff
-
-            # Iterate next siblings, looking only at Tag elements (not NavigableString)
-            text = None
-            for sibling in ts_link.next_siblings:
-                if not isinstance(sibling, Tag):
-                    continue  # skip NavigableString / text nodes
-                # Skip the 'Original Post' link (external link)
-                if sibling.name == "a":
-                    href = sibling.get("href", "")
-                    if "truthsocial.com" in str(href) or "statuses" in str(href):
-                        continue
-                # Skip another timestamp link (means we hit the next post)
-                if sibling.name == "a" and re.match(r"^/statuses/\d+$", str(sibling.get("href", ""))):
+            soup = BeautifulSoup(resp.text, "html.parser")
+            # Find all timestamp links: [April 21, 2026, 9:23 AM](/statuses/12345)
+            ts_links = soup.find_all("a", href=re.compile(r"^/statuses/\d+$"))
+            log.info("trumpstruth.org: found %d status links", len(ts_links))
+            for ts_link in ts_links:
+                if not isinstance(ts_link, Tag):
+                    continue
+                time_str = ts_link.get_text(strip=True)
+                if not _TS_RE.match(time_str):
+                    continue
+                post_dt = _parse_post_time(time_str)
+                if post_dt is None:
+                    continue
+                # posts are newest-first; stop when older than cutoff
+                if post_dt < cutoff:
                     break
-                # Skip profile image links and short/empty elements
-                sibling_text = sibling.get_text(separator=" ", strip=True)
-                if not sibling_text or len(sibling_text) < 5:
-                    continue
-                if "@realDonaldTrump" in sibling_text:
-                    continue
-                if "Donald J. Trump" in sibling_text and len(sibling_text) < 30:
-                    continue
-                # This should be the post content
-                text = " ".join(sibling_text.split())
-                break
-
-            if text:
-                posts.append(text[:220])
-
-            if len(posts) >= 10:
-                break
-
+                # Iterate next siblings, looking only at Tag elements
+                text = None
+                for sibling in ts_link.next_siblings:
+                    if not isinstance(sibling, Tag):
+                        continue  # skip NavigableString / text nodes
+                    sibling_href = str(sibling.get("href") or "")
+                    sibling_name = str(sibling.name or "")
+                    # Skip 'Original Post' link (external truthsocial link)
+                    if sibling_name == "a" and ("truthsocial.com" in sibling_href or "statuses" in sibling_href):
+                        continue
+                    # Skip profile/name links pointing to /#
+                    if sibling_name == "a" and sibling_href == "/#":
+                        continue
+                    # If we hit the next post's timestamp link, stop
+                    if sibling_name == "a" and re.match(r"^/statuses/\d+$", sibling_href):
+                        break
+                    # Skip profile image links and short/empty elements
+                    sibling_text = sibling.get_text(separator=" ", strip=True)
+                    if not sibling_text or len(sibling_text) < 5:
+                        continue
+                    if "@realDonaldTrump" in sibling_text:
+                        continue
+                    if "Donald J. Trump" in sibling_text and len(sibling_text) < 30:
+                        continue
+                    # This should be the post content
+                    text = " ".join(sibling_text.split())
+                    break
+                if text:
+                    posts.append(text[:280])
+                if len(posts) >= 10:
+                    break
     except Exception as exc:  # noqa: BLE001
         log.warning("trumpstruth.org fetch failed: %s", exc)
-
     log.info("trumpstruth.org: collected %d posts", len(posts))
     return posts
 
@@ -144,7 +138,8 @@ async def get_news_context(timeout: httpx.Timeout | None = None) -> dict:
         timeout = httpx.Timeout(15.0)
 
     now = datetime.now(tz=timezone.utc)
-    trump_cutoff = now - timedelta(hours=8)
+    # Use 2-hour cutoff for Trump posts to get recent ones
+    trump_cutoff = now - timedelta(hours=2)
     finnhub_cutoff = now - timedelta(hours=4)
 
     context: dict = _default_news_context()
@@ -161,17 +156,21 @@ async def get_news_context(timeout: httpx.Timeout | None = None) -> dict:
                     "https://finnhub.io/api/v1/news",
                     params={"category": "general", "token": finnhub_key},
                 )
-                if response.status_code == 200:
-                    for item in response.json():
-                        headline = str(item.get("headline") or "").strip()
-                        published_at = int(item.get("datetime") or 0)
-                        if not headline or published_at <= 0:
-                            continue
-                        published_dt = datetime.fromtimestamp(published_at, tz=timezone.utc)
-                        if published_dt >= finnhub_cutoff:
-                            top_headlines.append(headline)
-                        if len(top_headlines) >= 5:
-                            break
+            if response.status_code == 200:
+                for item in response.json():
+                    headline = str(item.get("headline") or "").strip()
+                    published_at_raw = item.get("datetime")
+                    try:
+                        published_at = int(float(str(published_at_raw))) if published_at_raw is not None else 0
+                    except (ValueError, TypeError):
+                        published_at = 0
+                    if not headline or published_at <= 0:
+                        continue
+                    published_dt = datetime.fromtimestamp(published_at, tz=timezone.utc)
+                    if published_dt >= finnhub_cutoff:
+                        top_headlines.append(headline)
+                    if len(top_headlines) >= 5:
+                        break
         except Exception as exc:  # noqa: BLE001
             log.warning("Finnhub fetch failed: %s", exc)
             top_headlines = []
