@@ -128,7 +128,7 @@ class FuturesScalpAnalysisResponse(BaseModel):
     top_headlines: list[str] = Field(default_factory=list)
     economic_event_warning: bool = False
     economic_event_block: bool = False
-    next_economic_event: str = ""
+    next_economic_event: str = ""    economic_events_today: list[str] = Field(default_factory=list)    economic_warning_message: str = ""
     daily_loss_pct: float = 0.0
     daily_loss_limit_pct: float = 3.0
     ema9: float | str | None = None
