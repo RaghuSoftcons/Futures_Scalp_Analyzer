@@ -14,7 +14,7 @@ from .price_feed import PriceFeed
 from .recommendations import compute_final_recommendation
 from .risk import evaluate_session_status, get_account_risk_template
 from .session_guard import check_session_allowed
-from .symbols import SUPPORTED_SYMBOLS, SymbolSpec
+from .symbols import SUPPORTED_SYMBOLS, SymbolSpech
 
 
 
@@ -775,7 +775,7 @@ async def analyze_request(
         trump_posts_recent=list(news_context.get("trump_posts_recent", [])),
         top_headlines=list(news_context.get("top_headlines", [])),
         economic_event_warning=bool(economic_context.get("event_warning", False)),
-        next_economic_event=str(economic_context.get("next_event", "")),
+        next_economic_event=str(economic_context.get("next_event", "")),            economic_events_today=list(economic_context.get("events_today", [])),            economic_warning_message=str(economic_context.get("warning_message", "")),
         session_state=session_state,
         final_recommendation=ctx["final_recommendation"],
     )
@@ -839,7 +839,7 @@ async def analyze_request(
         top_headlines=list(news_context.get("top_headlines", [])),
         economic_event_warning=bool(economic_context.get("event_warning", False)),
         economic_event_block=bool(economic_context.get("event_block", False)),
-        next_economic_event=str(economic_context.get("next_event", "")),
+        next_economic_event=str(economic_context.get("next_event", "")),            economic_events_today=list(economic_context.get("events_today", [])),            economic_warning_message=str(economic_context.get("warning_message", "")),
         daily_loss_pct=float(session_guard["daily_loss_pct"]),
         daily_loss_limit_pct=float(session_guard["daily_loss_limit_pct"]),
         ema9=gpt_fields["ema9"],
