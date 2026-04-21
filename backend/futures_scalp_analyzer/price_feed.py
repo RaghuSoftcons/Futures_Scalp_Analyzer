@@ -68,10 +68,21 @@ def normalize_root_symbol(symbol: str) -> str | None:
 
 
 class PriceFeed(ABC):
-    """Read-only interface for fetching a live futures price."""
+    """Read-only interface for fetching live futures pricing and bars."""
 
     @abstractmethod
     async def get_live_price(self, symbol: str) -> float | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_bars(
+        self,
+        symbol: str,
+        frequency_type: str,
+        frequency: int,
+        period_type: str,
+        period: int,
+    ) -> list[dict[str, float | int | str]]:
         raise NotImplementedError
 
 
@@ -83,6 +94,17 @@ class StaticPriceFeed(PriceFeed):
 
     async def get_live_price(self, symbol: str) -> float | None:
         return self._prices.get(symbol.upper())
+
+    async def get_bars(
+        self,
+        symbol: str,
+        frequency_type: str,
+        frequency: int,
+        period_type: str,
+        period: int,
+    ) -> list[dict[str, float | int | str]]:
+        del symbol, frequency_type, frequency, period_type, period
+        return []
 
 
 class ActiveContractResolver:
@@ -179,6 +201,100 @@ class SchwabQuotePriceFeed(PriceFeed):
 
     async def get_live_price(self, symbol: str) -> float | None:
         return await asyncio.to_thread(self.get_price, symbol)
+
+
+    async def get_bars(
+        self,
+        symbol: str,
+        frequency_type: str,
+        frequency: int,
+        period_type: str,
+        period: int,
+    ) -> list[dict[str, float | int | str]]:
+        return await asyncio.to_thread(
+            self.get_price_history,
+            symbol,
+            frequency_type,
+            frequency,
+            period_type,
+            period,
+        )
+
+    def get_price_history(
+        self,
+        symbol: str,
+        frequency_type: str,
+        frequency: int,
+        period_type: str,
+        period: int,
+    ) -> list[dict[str, float | int | str]]:
+        root_symbol = normalize_root_symbol(symbol)
+        if root_symbol is None:
+            LOGGER.warning("Unsupported symbol requested for bars: %s", symbol)
+            return []
+
+        allowed_frequency_type = {"minute", "daily"}
+        allowed_frequency = {1, 5, 15}
+        allowed_period_type = {"day"}
+        allowed_period = {1, 2, 5}
+        if (
+            frequency_type not in allowed_frequency_type
+            or frequency not in allowed_frequency
+            or period_type not in allowed_period_type
+            or period not in allowed_period
+        ):
+            LOGGER.warning(
+                "Invalid Schwab bar request: symbol=%s frequency_type=%s frequency=%s period_type=%s period=%s",
+                symbol,
+                frequency_type,
+                frequency,
+                period_type,
+                period,
+            )
+            return []
+
+        params = urllib.parse.urlencode(
+            {
+                "symbol": root_symbol,
+                "frequencyType": frequency_type,
+                "frequency": frequency,
+                "periodType": period_type,
+                "period": period,
+                "needExtendedHoursData": "true",
+                "needPreviousClose": "false",
+            }
+        )
+        url = f"{self.api_base_url}/marketdata/v1/pricehistory?{params}"
+
+        response, _ = self.fetch_json(url)
+        if response is None or response.status_code >= 400:
+            LOGGER.warning(
+                "Schwab price history request failed for %s (%s): status=%s",
+                symbol,
+                root_symbol,
+                None if response is None else response.status_code,
+            )
+            return []
+
+        try:
+            payload = response.json()
+            candles = payload.get("candles", [])
+            bars: list[dict[str, float | int | str]] = []
+            for candle in candles:
+                bars.append(
+                    {
+                        "open": float(candle.get("open", 0.0)),
+                        "high": float(candle.get("high", 0.0)),
+                        "low": float(candle.get("low", 0.0)),
+                        "close": float(candle.get("close", 0.0)),
+                        "volume": float(candle.get("volume", 0.0)),
+                        "datetime": int(candle.get("datetime", 0)),
+                    }
+                )
+            return bars
+        except Exception:
+            LOGGER.exception("Failed to parse Schwab price history payload for %s", symbol)
+            return []
 
     def get_price(self, symbol: str) -> float | None:
         quote_details = self.get_quote_details(symbol)
