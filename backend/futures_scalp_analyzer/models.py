@@ -33,7 +33,7 @@ class FuturesScalpIdeaRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     symbol: SupportedSymbol
-    side: TradeSide = Field(validation_alias=AliasChoices("side", "direction"))
+    side: TradeSide | None = Field(default=None, validation_alias=AliasChoices("side", "direction"))
     entry_price: float | None = Field(default=None, gt=0)
     stop_price: float | None = Field(default=None, gt=0)
     target_price: float | None = Field(default=None, gt=0)

@@ -448,7 +448,38 @@ def _build_gpt_fields(
     }
 
 
-async def analyze_request(
+def _recommendation_rank(value: str) -> int:
+    return {
+        "take": 4,
+        "scalp only": 3,
+        "take only on pullback": 2,
+        "pass": 1,
+        "flatten": 1,
+        "unavailable": 0,
+    }.get(value, -1)
+
+
+def _select_preferred_response(
+    long_response: FuturesScalpAnalysisResponse | dict[str, Any],
+    short_response: FuturesScalpAnalysisResponse | dict[str, Any],
+) -> FuturesScalpAnalysisResponse | dict[str, Any]:
+    if isinstance(long_response, dict):
+        return short_response
+    if isinstance(short_response, dict):
+        return long_response
+
+    candidates = [long_response, short_response]
+    return max(
+        candidates,
+        key=lambda response: (
+            _recommendation_rank(response.final_recommendation),
+            float(response.directional_score),
+            float(response.rr_ratio) if isinstance(response.rr_ratio, (int, float)) else 0.0,
+        ),
+    )
+
+
+async def _analyze_request_for_side(
     request: FuturesScalpIdeaRequest,
     price_feed: PriceFeed,
 ) -> FuturesScalpAnalysisResponse | dict[str, Any]:
@@ -880,3 +911,30 @@ async def analyze_request(
             rsi=market_context.get("rsi"), vwap_position=market_context.get("vwap_position"),
         ),
     )
+
+
+async def analyze_request(
+    request: FuturesScalpIdeaRequest,
+    price_feed: PriceFeed,
+) -> FuturesScalpAnalysisResponse | dict[str, Any]:
+    if request.side is not None:
+        return await _analyze_request_for_side(request, price_feed)
+
+    if request.mode == "position_mgmt":
+        return {
+            "error": "direction_required",
+            "detail": "Position management requests must include side as long or short.",
+            "symbol": request.symbol,
+            "mode": request.mode,
+            "final_recommendation": "unavailable",
+            "final_recommendation_comment": "Direction is required for position management.",
+            "as_of": datetime.now(timezone.utc).isoformat(),
+        }
+
+    long_request = request.model_copy(update={"side": "long"})
+    short_request = request.model_copy(update={"side": "short"})
+    long_response, short_response = await asyncio.gather(
+        _analyze_request_for_side(long_request, price_feed),
+        _analyze_request_for_side(short_request, price_feed),
+    )
+    return _select_preferred_response(long_response, short_response)
