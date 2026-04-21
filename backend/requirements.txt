@@ -2,3 +2,4 @@ fastapi==0.135.3
 uvicorn[standard]==0.44.0
 httpx==0.28.1
 pydantic==2.12.5
+beautifulsoup4==4.12.3
