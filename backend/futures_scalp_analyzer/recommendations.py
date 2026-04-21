@@ -3,6 +3,15 @@
 from __future__ import annotations
 
 
+def _to_float(value: object) -> float | None:
+    if value in (None, "", "unavailable"):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 FINAL_RECOMMENDATION_COMMENTS: dict[str, str] = {
     "take": "Setup is within prop rules with supportive pricing, liquidity, and reward-to-risk.",
     "take only on pullback": "Setup quality is acceptable, but current pricing looks chasey and a pullback is preferred.",
@@ -20,6 +29,194 @@ def _downgrade(recommendation: str, levels: int = 1) -> str:
         return recommendation
     idx = ORDERED_RECOMMENDATIONS.index(recommendation)
     return ORDERED_RECOMMENDATIONS[max(0, idx - levels)]
+
+
+def _pullback_bounds(ctx: dict) -> tuple[float, float]:
+    live_atr = max(_to_float(ctx.get("live_atr")) or 0.0, 1.0)
+    minimum = max(1.0, live_atr * 0.05)
+    maximum = max(minimum * 2.0, live_atr * 0.2)
+    return minimum, maximum
+
+
+def detect_pullback(ctx: dict) -> bool:
+    side = ctx.get("side")
+    live_price = _to_float(ctx.get("live_price"))
+    session_low = _to_float(ctx.get("session_low"))
+    session_high = _to_float(ctx.get("session_high"))
+    if live_price is None:
+        return False
+
+    minimum, maximum = _pullback_bounds(ctx)
+    if side == "short" and session_low is not None:
+        bounce_points = live_price - session_low
+        return minimum <= bounce_points <= maximum
+    if side == "long" and session_high is not None:
+        bounce_points = session_high - live_price
+        return minimum <= bounce_points <= maximum
+    return False
+
+
+def detect_extension(ctx: dict) -> bool:
+    side = ctx.get("side")
+    live_price = _to_float(ctx.get("live_price"))
+    session_low = _to_float(ctx.get("session_low"))
+    session_high = _to_float(ctx.get("session_high"))
+    if live_price is None:
+        return False
+
+    threshold = max(1.0, _pullback_bounds(ctx)[0] * 0.8)
+    if side == "short" and session_low is not None:
+        return live_price - session_low <= threshold
+    if side == "long" and session_high is not None:
+        return session_high - live_price <= threshold
+    return False
+
+
+def _rejection_or_stall(ctx: dict) -> bool:
+    live_price = _to_float(ctx.get("live_price"))
+    ema9 = _to_float(ctx.get("ema9"))
+    rsi = _to_float(ctx.get("rsi"))
+    volume_condition = ctx.get("volume_condition")
+    if live_price is None:
+        return False
+    if ema9 is not None and live_price <= ema9:
+        return True
+    if volume_condition in {"normal_volume", "low_volume"}:
+        return True
+    return rsi is not None and rsi <= 55.0
+
+
+def _strong_upward_impulse(ctx: dict) -> bool:
+    live_price = _to_float(ctx.get("live_price"))
+    ema9 = _to_float(ctx.get("ema9"))
+    session_low = _to_float(ctx.get("session_low"))
+    volume_condition = ctx.get("volume_condition")
+    if live_price is None:
+        return False
+
+    minimum_pullback, _ = _pullback_bounds(ctx)
+    bounce_from_low = (live_price - session_low) if session_low is not None else 0.0
+    if volume_condition == "high_volume" and bounce_from_low >= minimum_pullback:
+        return True
+    return ema9 is not None and live_price >= ema9 and bounce_from_low >= minimum_pullback
+
+
+def _near_session_low(ctx: dict) -> bool:
+    live_price = _to_float(ctx.get("live_price"))
+    session_low = _to_float(ctx.get("session_low"))
+    if live_price is None or session_low is None:
+        return False
+    _, maximum_pullback = _pullback_bounds(ctx)
+    return (live_price - session_low) <= maximum_pullback
+
+
+def compute_scalper_decision(ctx: dict) -> dict[str, str]:
+    side = ctx.get("side")
+    live_price = _to_float(ctx.get("live_price"))
+    vwap = _to_float(ctx.get("vwap"))
+    rsi = _to_float(ctx.get("rsi"))
+    trend = ctx.get("trend")
+    market_data_available = bool(ctx.get("market_data_available", False))
+    pullback_detected = detect_pullback(ctx)
+    extension_detected = detect_extension(ctx) and not pullback_detected
+
+    default_decision = {
+        "final_recommendation": "NO TRADE",
+        "reason": "Market context is incomplete for scalper execution timing.",
+        "entry_quality": "POOR",
+        "setup_type": "EXTENSION" if extension_detected else "PULLBACK",
+    }
+    if not market_data_available or live_price is None:
+        return default_decision
+
+    if side == "short":
+        if extension_detected:
+            return {
+                "final_recommendation": "NO TRADE",
+                "reason": "Price is pressing lows in extension with no pullback; avoid shorting the straight-line move.",
+                "entry_quality": "POOR",
+                "setup_type": "EXTENSION",
+            }
+        if vwap is None or live_price >= vwap:
+            return {
+                "final_recommendation": "NO TRADE",
+                "reason": "Short scalp needs price below VWAP before execution timing is acceptable.",
+                "entry_quality": "AVERAGE",
+                "setup_type": "PULLBACK",
+            }
+        if trend != "downtrend":
+            return {
+                "final_recommendation": "NO TRADE",
+                "reason": "Short scalp requires an active downtrend; current trend is not aligned.",
+                "entry_quality": "AVERAGE",
+                "setup_type": "PULLBACK",
+            }
+        if rsi is not None and rsi < 30.0 and not pullback_detected:
+            return {
+                "final_recommendation": "NO TRADE",
+                "reason": "RSI is already washed out and there has been no bounce, so the move is too extended to short.",
+                "entry_quality": "POOR",
+                "setup_type": "EXTENSION",
+            }
+        if not pullback_detected:
+            return {
+                "final_recommendation": "NO TRADE",
+                "reason": "Downtrend is intact, but there is no  pullback to lean against yet.",
+                "entry_quality": "POOR",
+                "setup_type": "EXTENSION",
+            }
+        if not _rejection_or_stall(ctx):
+            return {
+                "final_recommendation": "NO TRADE",
+                "reason": "Bounce occurred, but rejection or stall after the pullback is still missing.",
+                "entry_quality": "AVERAGE",
+                "setup_type": "PULLBACK",
+            }
+        return {
+            "final_recommendation": "SHORT",
+            "reason": "Price is below VWAP in a downtrend, and the bounce has stalled after a tradable pullback.",
+            "entry_quality": "GOOD",
+            "setup_type": "PULLBACK",
+        }
+
+    if side == "long":
+        strong_impulse = _strong_upward_impulse(ctx)
+        if rsi is None or rsi > 30.0:
+            return {
+                "final_recommendation": "NO TRADE",
+                "reason": "Counter-trend long scalp needs an oversold RSI condition before considering reversal timing.",
+                "entry_quality": "POOR",
+                "setup_type": "REVERSAL",
+            }
+        if not _near_session_low(ctx):
+            return {
+                "final_recommendation": "NO TRADE",
+                "reason": "Long scalp requires price to be working near the session low for a clean reversal location.",
+                "entry_quality": "AVERAGE",
+                "setup_type": "REVERSAL",
+            }
+        if not strong_impulse:
+            return {
+                "final_recommendation": "NO TRADE",
+                "reason": "Bounce is weak and lacks the upward impulse needed for a reversal scalp.",
+                "entry_quality": "POOR",
+                "setup_type": "REVERSAL",
+            }
+        if ctx.get("vwap_position") == "below_vwap" and not strong_impulse:
+            return {
+                "final_recommendation": "NO TRADE",
+                "reason": "Long scalp is still below VWAP without a reversal impulse.",
+                "entry_quality": "POOR",
+                "setup_type": "REVERSAL",
+            }
+        return {
+            "final_recommendation": "LONG",
+            "reason": "RSI is oversold near the session low and a strong upward impulse is in place for a reversal scalp.",
+            "entry_quality": "AVERAGE" if ctx.get("vwap_position") == "below_vwap" else "GOOD",
+            "setup_type": "REVERSAL",
+        }
+
+    return default_decision
 
 
 def _base_recommendation(ctx: dict) -> str:
@@ -84,47 +281,28 @@ def compute_final_recommendation(ctx: dict) -> str:
 
     recommendation = _base_recommendation(ctx)
     reasons: list[str] = []
-    side = ctx.get("side")
-    market_data_available = bool(ctx.get("market_data_available", False))
 
-    if not market_data_available:
-        reasons.append("Market data unavailable; using baseline risk/reward logic.")
-    else:
-        trend = ctx.get("trend")
-        if trend == "downtrend" and side == "long" and recommendation in ORDERED_RECOMMENDATIONS:
-            recommendation = _downgrade(recommendation)
-            reasons.append("Long setup opposes a detected downtrend.")
-        if trend == "uptrend" and side == "short" and recommendation in ORDERED_RECOMMENDATIONS:
-            recommendation = _downgrade(recommendation)
-            reasons.append("Short setup opposes a detected uptrend.")
+    if recommendation in {"pass", "flatten", "unavailable"}:
+        base_comment = FINAL_RECOMMENDATION_COMMENTS.get(recommendation, "")
+        ctx["final_recommendation"] = recommendation
+        ctx["final_recommendation_comment"] = base_comment
+        return recommendation
 
-        rsi_condition = ctx.get("rsi_condition")
-        if rsi_condition == "overbought" and side == "long" and recommendation in ORDERED_RECOMMENDATIONS:
-            recommendation = _downgrade(recommendation, levels=2)
-            if recommendation == "take":
-                recommendation = "take only on pullback"
-            reasons.append("RSI is overbought for a long entry; pullback preferred.")
-        if rsi_condition == "oversold" and side == "short" and recommendation in ORDERED_RECOMMENDATIONS:
-            recommendation = _downgrade(recommendation, levels=2)
-            if recommendation == "take":
-                recommendation = "take only on pullback"
-            reasons.append("RSI is oversold for a short entry; pullback preferred.")
+    if bool(ctx.get("market_data_available", False)):
+        scalper_decision = compute_scalper_decision(ctx)
+        ctx["scalper_decision"] = scalper_decision
+        reasons.append(scalper_decision["reason"])
 
-        if ctx.get("volume_condition") == "low_volume" and recommendation in ORDERED_RECOMMENDATIONS:
-            if recommendation == "take":
-                recommendation = "scalp only"
-            if recommendation == "take only on pullback":
-                recommendation = "scalp only"
-            reasons.append("Low-volume environment reduces follow-through odds.")
+        if scalper_decision["final_recommendation"] == "NO TRADE":
+            recommendation = "pass"
+        elif scalper_decision["final_recommendation"] == "SHORT":
+            recommendation = "take" if scalper_decision["entry_quality"] == "GOOD" else "scalp only"
+        elif scalper_decision["final_recommendation"] == "LONG":
+            recommendation = "scalp only" if ctx.get("vwap_position") == "below_vwap" else "take"
 
-        if ctx.get("vwap_position") == "below_vwap" and side == "long" and recommendation in ORDERED_RECOMMENDATIONS:
-            if recommendation == "take":
-                recommendation = "scalp only"
-            reasons.append("Long setup below VWAP adds directional risk.")
-
-        if ctx.get("market_structure") == "bearish_structure" and side == "long" and recommendation in ORDERED_RECOMMENDATIONS:
-            recommendation = _downgrade(recommendation)
-            reasons.append("15m market structure is bearish against the long idea.")
+        if ctx.get("volume_condition") == "low_volume" and recommendation == "take":
+            recommendation = "scalp only"
+            reasons.append("Low volume keeps this in scalp-only mode.")
 
     base_comment = FINAL_RECOMMENDATION_COMMENTS.get(recommendation, "")
     ctx["final_recommendation"] = recommendation

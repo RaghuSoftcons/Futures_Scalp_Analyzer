@@ -1,4 +1,9 @@
-from futures_scalp_analyzer.recommendations import compute_final_recommendation
+from futures_scalp_analyzer.recommendations import (
+    compute_final_recommendation,
+    compute_scalper_decision,
+    detect_extension,
+    detect_pullback,
+)
 from futures_scalp_analyzer.risk import get_account_risk_template
 
 
@@ -102,3 +107,69 @@ def test_account_scaling_templates():
 def test_preserve_existing_recommendation():
     ctx = make_ctx(final_recommendation="flatten")
     assert compute_final_recommendation(ctx) == "flatten"
+
+
+def test_short_scalp_pullback_below_vwap_downtrend_returns_short():
+    ctx = make_ctx(
+        side="short",
+        market_data_available=True,
+        live_price=19910.0,
+        vwap=19940.0,
+        trend="downtrend",
+        session_low=19900.0,
+        session_high=20010.0,
+        live_atr=100.0,
+        ema9=19915.0,
+        rsi=42.0,
+        vwap_position="below_vwap",
+        volume_condition="normal_volume",
+    )
+    assert detect_pullback(ctx) is True
+    decision = compute_scalper_decision(ctx)
+    assert decision["final_recommendation"] == "SHORT"
+    assert decision["setup_type"] == "PULLBACK"
+    assert compute_final_recommendation(ctx) == "take"
+
+
+def test_short_scalp_extension_blocks_trade():
+    ctx = make_ctx(
+        side="short",
+        market_data_available=True,
+        live_price=19903.0,
+        vwap=19945.0,
+        trend="downtrend",
+        session_low=19900.0,
+        session_high=20010.0,
+        live_atr=100.0,
+        ema9=19910.0,
+        rsi=27.0,
+        vwap_position="below_vwap",
+        volume_condition="high_volume",
+    )
+    assert detect_pullback(ctx) is False
+    assert detect_extension(ctx) is True
+    decision = compute_scalper_decision(ctx)
+    assert decision["final_recommendation"] == "NO TRADE"
+    assert decision["setup_type"] == "EXTENSION"
+    assert compute_final_recommendation(ctx) == "pass"
+
+
+def test_long_reversal_near_session_low_with_strong_bounce_returns_long():
+    ctx = make_ctx(
+        side="long",
+        market_data_available=True,
+        live_price=19908.0,
+        vwap=19925.0,
+        trend="downtrend",
+        session_low=19900.0,
+        session_high=20010.0,
+        live_atr=100.0,
+        ema9=19905.0,
+        rsi=28.0,
+        vwap_position="below_vwap",
+        volume_condition="high_volume",
+    )
+    decision = compute_scalper_decision(ctx)
+    assert decision["final_recommendation"] == "LONG"
+    assert decision["setup_type"] == "REVERSAL"
+    assert compute_final_recommendation(ctx) == "scalp only"
