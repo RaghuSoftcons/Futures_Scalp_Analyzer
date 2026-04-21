@@ -116,20 +116,20 @@ class FuturesScalpAnalysisResponse(BaseModel):
     final_recommendation_comment: str
     directional_score: float = 0.0
     momentum_bias: str = "neutral"
-    ema9: float | None = None
-    ema20: float | None = None
-    vwap: float | None = None
-    rsi: float | None = None
-    live_atr: float | None = None
+    ema9: float | str | None = None
+    ema20: float | str | None = None
+    vwap: float | str | None = None
+    rsi: float | str | None = None
+    live_atr: float | str | None = None
     volume_ratio: float | None = None
     trend: str | None = None
     market_structure: str | None = None
     vwap_position: str | None = None
     rsi_condition: str | None = None
     volume_condition: str | None = None
-    session_high: float | None = None
-    session_low: float | None = None
-    prior_day_high: float | None = None
-    prior_day_low: float | None = None
+    session_high: float | str | None = None
+    session_low: float | str | None = None
+    prior_day_high: float | str | None = None
+    prior_day_low: float | str | None = None
     market_data_available: bool = False
     as_of: datetime

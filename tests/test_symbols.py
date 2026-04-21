@@ -59,6 +59,9 @@ def test_mnq_risk_calculation_within_50k_limit():
     assert response.per_trade_risk_limit == 100.0
     assert response.risk_rule_violations.per_trade_risk_exceeds_limit is False
     assert response.verdict in {"GO", "WAIT", "NO GO"}
+    assert response.market_data_available is False
+    assert response.ema9 == "unavailable"
+    assert response.trend == "unavailable"
 
 
 def test_nq_risk_calculation_within_50k_limit():
@@ -81,3 +84,5 @@ def test_nq_risk_calculation_within_50k_limit():
     assert response.risk_per_contract == 100.0
     assert response.per_trade_risk_limit == 100.0
     assert response.risk_rule_violations.per_trade_risk_exceeds_limit is False
+    assert response.vwap == "unavailable"
+    assert response.market_structure == "unavailable"
