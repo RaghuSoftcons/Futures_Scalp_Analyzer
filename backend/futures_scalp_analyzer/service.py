@@ -14,6 +14,86 @@ from .risk import evaluate_session_status, get_account_risk_template
 from .symbols import SUPPORTED_SYMBOLS, SymbolSpec
 
 
+def _ema(values: list[float], period: int) -> float | None:
+    if len(values) < period:
+        return None
+    seed = sum(values[:period]) / period
+    multiplier = 2.0 / (period + 1)
+    ema_value = seed
+    for value in values[period:]:
+        ema_value = (value - ema_value) * multiplier + ema_value
+    return ema_value
+
+
+def _wilder_rsi(closes: list[float], period: int = 14) -> float | None:
+    if len(closes) <= period:
+        return None
+    gains: list[float] = []
+    losses: list[float] = []
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        gains.append(max(delta, 0.0))
+        losses.append(max(-delta, 0.0))
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(gains)):
+        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
+        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
+
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def _timeframe_vwap(bars: list[dict]) -> float | None:
+    cumulative_pv = 0.0
+    cumulative_volume = 0.0
+    for bar in bars:
+        high = float(bar["high"])
+        low = float(bar["low"])
+        close = float(bar["close"])
+        volume = float(bar.get("volume", 0.0))
+        typical_price = (high + low + close) / 3.0
+        cumulative_pv += typical_price * volume
+        cumulative_volume += volume
+    if cumulative_volume == 0:
+        return None
+    return cumulative_pv / cumulative_volume
+
+
+def _compute_timeframe_bias(bars: list[dict]) -> str:
+    if len(bars) < 20:
+        return "neutral"
+    closes = [float(bar["close"]) for bar in bars]
+    ema9 = _ema(closes, 9)
+    ema20 = _ema(closes, 20)
+    rsi = _wilder_rsi(closes, 14)
+    vwap = _timeframe_vwap(bars)
+    latest_close = closes[-1]
+    if ema9 is None or ema20 is None or rsi is None or vwap is None:
+        return "neutral"
+    if ema9 > ema20 and latest_close > vwap and rsi > 50:
+        return "long"
+    if ema9 < ema20 and latest_close < vwap and rsi < 50:
+        return "short"
+    return "neutral"
+
+
+def _compute_timeframe_alignment(bias_1m: str, bias_5m: str, bias_15m: str) -> str:
+    biases = [bias_1m, bias_5m, bias_15m]
+    neutral_count = sum(1 for bias in biases if bias == "neutral")
+    if neutral_count >= 2 or neutral_count == 3:
+        return "neutral"
+    if all(bias == "long" for bias in biases):
+        return "aligned_long"
+    if all(bias == "short" for bias in biases):
+        return "aligned_short"
+    return "mixed"
+
+
 def _resolve_trade_levels(
     request: FuturesScalpIdeaRequest,
     spec: SymbolSpec,
@@ -192,6 +272,10 @@ def _build_gpt_fields(
     prior_day_low: float | None,
     live_atr: float | None,
     market_data_available: bool,
+    bias_1m: str,
+    bias_5m: str,
+    bias_15m: str,
+    timeframe_alignment: str,
     session_state: dict[str, float | int | bool | str],
     final_recommendation: str,
 ) -> dict[str, str]:
@@ -235,6 +319,13 @@ def _build_gpt_fields(
             "prior_day_low": "unavailable",
             "live_atr": "unavailable",
             "market_data_available": "false",
+            "timeframe_bias": (
+                "## Timeframe Bias\n"
+                f"1-min: {bias_1m}\n"
+                f"5-min: {bias_5m}\n"
+                f"15-min: {bias_15m}\n"
+                f"Alignment: {timeframe_alignment}"
+            ),
         }
 
     price_context = "above" if live_price is not None and live_price > entry_price else "below"
@@ -248,6 +339,10 @@ def _build_gpt_fields(
         watch_out_for = "Price is not in the cleanest entry zone yet, so waiting for location is the main edge."
     elif verdict == "NO GO":
         watch_out_for = "The reward-to-risk or prop-rule alignment is not strong enough for a disciplined scalp."
+    if timeframe_alignment in {"aligned_long", "aligned_short"}:
+        watch_out_for = f"{watch_out_for} Multi-timeframe alignment is strong confirmation ({timeframe_alignment})."
+    elif timeframe_alignment == "mixed":
+        watch_out_for = f"{watch_out_for} Timeframe conflict detected; wait for alignment before committing size."
 
     return {
         "direction": direction,
@@ -273,6 +368,15 @@ def _build_gpt_fields(
         "prior_day_low": _fmt_number(prior_day_low),
         "live_atr": _fmt_number(live_atr),
         "market_data_available": str(market_data_available).lower(),
+        "timeframe_bias": (
+            "## Timeframe Bias\n"
+            f"1-min: {bias_1m}\n"
+            f"5-min: {bias_5m}\n"
+            f"15-min: {bias_15m}\n"
+            f"Alignment: {timeframe_alignment}\n\n"
+            "If alignment is aligned_long or aligned_short, treat it as strong confirmation. "
+            "If alignment is mixed, explicitly call out conflict in watch_out_for."
+        ),
     }
 
 
@@ -323,6 +427,10 @@ async def analyze_request(
             prior_day_low=None,
             live_atr=None,
             market_data_available=False,
+            bias_1m="neutral",
+            bias_5m="neutral",
+            bias_15m="neutral",
+            timeframe_alignment="neutral",
             session_state=session_state,
             final_recommendation="pass",
         )
@@ -370,6 +478,10 @@ async def analyze_request(
             final_recommendation_comment=str(session_state["reason"]),
             directional_score=0.0,
             momentum_bias="neutral",
+            bias_1m="neutral",
+            bias_5m="neutral",
+            bias_15m="neutral",
+            timeframe_alignment="neutral",
             market_data_available=False,
             as_of=datetime.now(timezone.utc),
         )
@@ -398,15 +510,29 @@ async def analyze_request(
     bars_5m: list[dict] = []
     bars_15m: list[dict] = []
     daily_bars: list[dict] = []
-    try:
-        bars_1m, bars_5m, bars_15m, daily_bars = await asyncio.gather(
-            price_feed.get_bars(request.symbol, "minute", 1, "day", 1),
-            price_feed.get_bars(request.symbol, "minute", 5, "day", 2),
-            price_feed.get_bars(request.symbol, "minute", 15, "day", 5),
-            price_feed.get_bars(request.symbol, "daily", 1, "day", 5),
-        )
-    except Exception:
-        bars_1m, bars_5m, bars_15m, daily_bars = [], [], [], []
+    bars_results = await asyncio.gather(
+        price_feed.get_bars(request.symbol, "minute", 1, "day", 1),
+        price_feed.get_bars(request.symbol, "minute", 5, "day", 2),
+        price_feed.get_bars(request.symbol, "minute", 15, "day", 5),
+        price_feed.get_bars(request.symbol, "daily", 1, "day", 5),
+        return_exceptions=True,
+    )
+    for idx, result in enumerate(bars_results):
+        if isinstance(result, Exception):
+            continue
+        if idx == 0:
+            bars_1m = result
+        elif idx == 1:
+            bars_5m = result
+        elif idx == 2:
+            bars_15m = result
+        else:
+            daily_bars = result
+
+    bias_1m = _compute_timeframe_bias(bars_1m)
+    bias_5m = _compute_timeframe_bias(bars_5m)
+    bias_15m = _compute_timeframe_bias(bars_15m)
+    timeframe_alignment = _compute_timeframe_alignment(bias_1m, bias_5m, bias_15m)
 
     prior_day_high = float(daily_bars[-2]["high"]) if len(daily_bars) >= 2 else None
     prior_day_low = float(daily_bars[-2]["low"]) if len(daily_bars) >= 2 else None
@@ -494,6 +620,10 @@ async def analyze_request(
         prior_day_low=market_context.get("prior_day_low"),
         live_atr=market_context.get("live_atr"),
         market_data_available=bool(market_context.get("market_data_available", False)),
+        bias_1m=bias_1m,
+        bias_5m=bias_5m,
+        bias_15m=bias_15m,
+        timeframe_alignment=timeframe_alignment,
         session_state=session_state,
         final_recommendation=ctx["final_recommendation"],
     )
@@ -538,6 +668,10 @@ async def analyze_request(
         final_recommendation_comment=ctx["final_recommendation_comment"],
         directional_score=round(directional_score, 1),
         momentum_bias=momentum_bias,
+        bias_1m=bias_1m,
+        bias_5m=bias_5m,
+        bias_15m=bias_15m,
+        timeframe_alignment=timeframe_alignment,
         ema9=gpt_fields["ema9"],
         ema20=gpt_fields["ema20"],
         vwap=gpt_fields["vwap"],
