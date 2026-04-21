@@ -161,6 +161,12 @@ def _momentum_bias(directional_score: float) -> str:
     return "neutral"
 
 
+def _format_news_items(items: list[str] | None) -> str:
+    if not items:
+        return "none"
+    return "; ".join(items)
+
+
 def _build_gpt_fields(
     account_size: int,
     losses_today: int,
@@ -194,6 +200,10 @@ def _build_gpt_fields(
     market_data_available: bool,
     session_state: dict[str, float | int | bool | str],
     final_recommendation: str,
+    news_bias: str = "neutral",
+    news_bias_note: str = "No significant macro/news skew detected.",
+    trump_posts_recent: list[str] | None = None,
+    top_headlines: list[str] | None = None,
 ) -> dict[str, str]:
     def _fmt_number(value: float | None) -> str:
         if not market_data_available or value is None:
@@ -206,6 +216,31 @@ def _build_gpt_fields(
         return value
 
     direction = side.upper()
+    news_bias_normalized = news_bias.lower().strip() if news_bias else "neutral"
+    trump_posts_text = _format_news_items(trump_posts_recent)
+    top_headlines_text = _format_news_items(top_headlines)
+    news_context_block = (
+        "## News & Geopolitical Context\n"
+        f"Overall Bias: {news_bias_normalized}\n"
+        f"Bias Note: {news_bias_note}\n"
+        f"Recent Trump/Truth Social Posts: {trump_posts_text}\n"
+        f"Top Headlines: {top_headlines_text}"
+    )
+    news_bias_guidance = (
+        "When setting verdict/why/watch_out_for, adjust conviction using news bias: "
+        "bearish + long => lower conviction and explicitly flag downside/news risk in watch_out_for; "
+        "bullish + long => higher conviction; neutral => no bias adjustment. "
+        "Always surface relevant headlines or Trump/Truth Social posts in watch_out_for when they may impact the symbol."
+    )
+    system_prompt = (
+        "You are a disciplined futures scalp evaluator operating under prop-firm risk rules. "
+        "Use objective risk/reward and market-structure evidence first, then apply news context."
+        f"\n{news_bias_guidance}"
+    )
+    user_message = (
+        "Review the trade setup and return structured guidance for verdict, why, and watch_out_for.\n"
+        f"{news_context_block}"
+    )
     session_status = str(session_state["session_status"])
     verdict = _resolve_gpt_verdict(final_recommendation, session_status)
 
@@ -235,6 +270,8 @@ def _build_gpt_fields(
             "prior_day_low": "unavailable",
             "live_atr": "unavailable",
             "market_data_available": "false",
+            "system_prompt": system_prompt,
+            "user_message": user_message,
         }
 
     price_context = "above" if live_price is not None and live_price > entry_price else "below"
@@ -248,6 +285,19 @@ def _build_gpt_fields(
         watch_out_for = "Price is not in the cleanest entry zone yet, so waiting for location is the main edge."
     elif verdict == "NO GO":
         watch_out_for = "The reward-to-risk or prop-rule alignment is not strong enough for a disciplined scalp."
+
+    if news_bias_normalized == "bearish" and side == "long":
+        why = f"{why} News backdrop is bearish, so long-side conviction should be reduced."
+        if verdict == "GO":
+            verdict = "WAIT"
+        watch_out_for = f"{watch_out_for} Bearish news flow is a downside risk for long exposure."
+    elif news_bias_normalized == "bullish" and side == "long":
+        why = f"{why} News backdrop is bullish, supporting long-side conviction."
+
+    if trump_posts_text != "none":
+        watch_out_for = f"{watch_out_for} Trump/Truth Social: {trump_posts_text}."
+    if top_headlines_text != "none":
+        watch_out_for = f"{watch_out_for} Headlines: {top_headlines_text}."
 
     return {
         "direction": direction,
@@ -273,6 +323,8 @@ def _build_gpt_fields(
         "prior_day_low": _fmt_number(prior_day_low),
         "live_atr": _fmt_number(live_atr),
         "market_data_available": str(market_data_available).lower(),
+        "system_prompt": system_prompt,
+        "user_message": user_message,
     }
 
 
