@@ -72,6 +72,7 @@ async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> li
         for item in items:
             pub_date_el = item.find("pubDate")
             title_el = item.find("title")
+            desc_el = item.find("description")
             if pub_date_el is None or title_el is None:
                 continue
             try:
@@ -81,7 +82,7 @@ async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> li
                 continue
             if pub_dt < cutoff:
                 continue
-            text = (title_el.text or "").strip()
+            text = (desc_el.text if desc_el is not None else None) or (title_el.text or "").strip()
             if not text or len(text) < 5:
                 continue
             posts.append(text)
