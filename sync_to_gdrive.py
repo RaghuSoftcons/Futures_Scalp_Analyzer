@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run this script from the root of the local repo clone after any PR is merged to keep your Google Drive folder in sync with the latest backend code."""
+"""Run from the repo root after merges to sync backend files to C:\\Users\\Raghu\\Google Drive\\Futures_Scalp_Analyzer."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ FILES_TO_COPY = [
     "pyproject.toml",
 ]
 
-DEFAULT_DEST = r"C:\Users\Raghu\Google Drive\Futures_Scalp_Analyzer"
+DEFAULT_DEST = r"C:\\Users\\Raghu\\Google Drive\\Futures_Scalp_Analyzer"
 
 
 def parse_args() -> argparse.Namespace:
