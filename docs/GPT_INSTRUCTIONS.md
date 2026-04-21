@@ -83,6 +83,8 @@ FUTURES SCALP ADVISOR
 
 5) NEWS & ECON
 - News bias: {news_bias}
+- News bias note: {news_bias_note}
+- Truth Social posts ({trump_posts_count} recent): {trump_posts_recent}
 - Economic event block: {economic_event_block} (true/false)
 - Next economic event: {next_economic_event}
 
@@ -98,8 +100,8 @@ FUTURES SCALP ADVISOR
 - Verdict: {verdict}
 
 7) ANALYSIS
-- LONG analysis: {analysis.long}
-- SHORT analysis: {analysis.short}
+- LONG analysis: {analysis_long}
+- SHORT analysis: {analysis_short}
 - Why: {why}
 - Watch out for: {watch_out_for}
 
