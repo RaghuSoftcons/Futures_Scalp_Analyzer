@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run from the repo root after merges to sync backend files to D:\\Google Drive\\0.00 ChatGPT Codex\\Futures_Scalper_Phase1."""
+"""Run from the repo root after merges to sync backend files to D:\Google Drive\0.00 ChatGPT Codex\Futures_Scalper_Phase1."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ FILES_TO_COPY = [
     "backend/futures_scalp_analyzer/symbols.py",
     "backend/app.py",
     "backend/requirements.txt",
-    "Procfile",
+    "backend/Procfile",
     "pyproject.toml",
 ]
 
-DEFAULT_DEST = r"D:\\Google Drive\\0.00 ChatGPT Codex\\Futures_Scalper_Phase1"
+DEFAULT_DEST = r"D:\Google Drive\0.00 ChatGPT Codex\Futures_Scalper_Phase1"
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,18 +42,24 @@ def main() -> None:
     dest_root = Path(args.dest).expanduser()
 
     copied_count = 0
+    skipped_count = 0
     for relative_file in FILES_TO_COPY:
         source = repo_root / relative_file
         if not source.exists():
             raise FileNotFoundError(f"Source file does not exist: {source}")
 
         destination = dest_root / relative_file
+        if source.resolve() == destination.resolve():
+            print(f"Skipped {relative_file} (source and destination are the same file)")
+            skipped_count += 1
+            continue
+
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         copied_count += 1
-        print(f"✓ Copied {relative_file}")
+        print(f"Copied {relative_file}")
 
-    print(f"Sync complete. {copied_count} files copied to {dest_root}")
+    print(f"Sync complete. {copied_count} files copied, {skipped_count} files skipped. Destination: {dest_root}")
 
 
 if __name__ == "__main__":
