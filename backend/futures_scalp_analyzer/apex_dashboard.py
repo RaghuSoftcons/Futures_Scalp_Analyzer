@@ -630,7 +630,9 @@ def render_apex_dashboard() -> str:
         document.getElementById("current-time").textContent = "Last Update: " + prettyTimestamp(market.last_update_time || market.timestamp || decisionEnvelope.timestamp || payload.timestamp || new Date().toISOString());
         document.getElementById("data-source").textContent = "Data Source: " + fmtValue("data_source", market.data_source || "unavailable");
         document.getElementById("data-mode").textContent = "Mode: " + fmtValue("data_mode", market.data_mode || "unavailable");
-        document.getElementById("provider-status").textContent = "Provider: " + fmtValue("provider_status", market.provider_status || "unavailable");
+        const isKnownMarketClosure = marketSession.status === "closed" || marketSession.status === "maintenance" || decision.no_trade_reason === "market closed";
+        const providerDisplay = isKnownMarketClosure && market.data_source === "schwab" ? "MARKET CLOSED" : fmtValue("provider_status", market.provider_status || "unavailable");
+        document.getElementById("provider-status").textContent = "Provider: " + providerDisplay;
         document.getElementById("mock-warning").style.display = market.data_source === "mock" ? "block" : "none";
         const sessionWarning = document.getElementById("market-session-warning");
         if (marketSession.message) {{
@@ -642,7 +644,7 @@ def render_apex_dashboard() -> str:
           sessionWarning.textContent = "";
         }}
         const staleWarning = document.getElementById("stale-warning");
-        staleWarning.style.display = market.is_stale ? "block" : "none";
+        staleWarning.style.display = market.is_stale && !isKnownMarketClosure ? "block" : "none";
         staleWarning.textContent = market.stale_reason ? "Data Stale — Verify Before Trading: " + market.stale_reason : "Data Stale — Verify Before Trading";
         document.getElementById("market-data").innerHTML = marketKeys.map((key) => metric(key, market[key], {{ className: primaryKeys.has(key) ? "primary" : "" }})).join("");
         document.getElementById("risk-settings").innerHTML = riskKeys.map((key) => metric(key, payload.risk_settings[key])).join("");

@@ -89,6 +89,9 @@ def test_dashboard_route_contains_required_static_contract():
     assert "market-session-warning" in body
     assert "marketSession.message" in body
     assert "Current ET:" in body
+    assert "isKnownMarketClosure" in body
+    assert '"MARKET CLOSED"' in body
+    assert 'market.is_stale && !isKnownMarketClosure ? "block" : "none"' in body
     assert "data-mode" in body
     assert "provider-status" in body
     assert "DATA GATE OPEN" in body
