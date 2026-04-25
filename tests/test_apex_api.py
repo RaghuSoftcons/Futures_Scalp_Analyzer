@@ -7,6 +7,9 @@ from futures_scalp_analyzer.apex_pipeline import MANUAL_EXECUTION_NOTE, MarketDa
 from futures_scalp_analyzer.price_feed import StaticPriceFeed
 
 
+OPEN_MARKET_QUERY = "market_time=2026-04-27T10:00:00-04:00"
+
+
 def _client() -> TestClient:
     app = create_app(StaticPriceFeed({"NQ": 101.0}))
     app.state.apex_provider = MockMarketDataProvider()
@@ -40,11 +43,19 @@ def _client_with_provider(provider: MarketDataProvider) -> TestClient:
 
 
 def test_apex_payload_endpoint_returns_valid_json():
-    response = _client().get("/apex/payload/NQ")
+    response = _client().get(f"/apex/payload/NQ?{OPEN_MARKET_QUERY}")
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"market_data", "multi_timeframe_trend", "context", "risk_settings", "risk_state", "timestamp"}
+    assert set(body) == {
+        "market_data",
+        "multi_timeframe_trend",
+        "market_session",
+        "context",
+        "risk_settings",
+        "risk_state",
+        "timestamp",
+    }
     assert body["market_data"]["symbol"] == "NQ"
     assert body["market_data"]["data_source"] == "mock"
     assert "timeframes" in body["multi_timeframe_trend"]
@@ -56,11 +67,12 @@ def test_apex_payload_endpoint_returns_valid_json():
 
 
 def test_apex_payload_endpoint_includes_required_sections():
-    body = _client().get("/apex/payload/NQ").json()
+    body = _client().get(f"/apex/payload/NQ?{OPEN_MARKET_QUERY}").json()
 
     assert "market_data" in body
     assert "context" in body
     assert "risk_settings" in body
+    assert "market_session" in body
     assert "data_mode" in body["market_data"]
     assert "provider_status" in body["market_data"]
     assert "data_gate_status" in body["market_data"]
@@ -69,13 +81,14 @@ def test_apex_payload_endpoint_includes_required_sections():
 
 
 def test_apex_decision_endpoint_returns_payload_and_decision():
-    response = _client().get("/apex/decision/NQ")
+    response = _client().get(f"/apex/decision/NQ?{OPEN_MARKET_QUERY}")
 
     assert response.status_code == 200
     body = response.json()
     assert set(body) == {"payload", "decision", "technical_readout", "timestamp"}
     assert "market_data" in body["payload"]
     assert "multi_timeframe_trend" in body["payload"]
+    assert "market_session" in body["payload"]
     assert "context" in body["payload"]
     assert "risk_settings" in body["payload"]
     assert body["decision"]["recommendation"] in {"LONG", "SHORT", "NO TRADE"}
@@ -86,7 +99,7 @@ def test_apex_decision_endpoint_returns_payload_and_decision():
 
 
 def test_apex_decision_endpoint_risk_blocked_returns_no_trade():
-    body = _client().get("/apex/decision/NQ?estimated_risk=501").json()
+    body = _client().get(f"/apex/decision/NQ?estimated_risk=501&{OPEN_MARKET_QUERY}").json()
 
     assert body["decision"]["recommendation"] == "NO TRADE"
     assert body["decision"]["risk_status"] == "blocked"
@@ -95,9 +108,9 @@ def test_apex_decision_endpoint_risk_blocked_returns_no_trade():
 
 def test_apex_decision_endpoint_news_social_do_not_affect_decision():
     client = _client()
-    baseline = client.get("/apex/decision/NQ").json()["decision"]
+    baseline = client.get(f"/apex/decision/NQ?{OPEN_MARKET_QUERY}").json()["decision"]
     with_context = client.get(
-        "/apex/decision/NQ?news_title=Breaking%20display%20headline&social_title=Display%20only%20post"
+        f"/apex/decision/NQ?news_title=Breaking%20display%20headline&social_title=Display%20only%20post&{OPEN_MARKET_QUERY}"
     ).json()["decision"]
 
     assert with_context["display_context"]["news"][0]["title"] == "Breaking display headline"
@@ -109,7 +122,7 @@ def test_apex_decision_endpoint_news_social_do_not_affect_decision():
 
 
 def test_apex_decision_endpoint_stale_data_returns_no_trade():
-    body = _client_with_provider(StaleProvider()).get("/apex/decision/NQ").json()
+    body = _client_with_provider(StaleProvider()).get(f"/apex/decision/NQ?{OPEN_MARKET_QUERY}").json()
 
     assert body["payload"]["market_data"]["is_stale"] is True
     assert body["payload"]["market_data"]["stale_reason"] == "market data stale"

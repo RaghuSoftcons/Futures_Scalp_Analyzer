@@ -84,6 +84,7 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
         locked_out: bool = False,
         news_title: str | None = None,
         social_title: str | None = None,
+        market_time: datetime | None = None,
         feed: PriceFeed = Depends(get_price_feed),
     ) -> dict[str, Any]:
         context = {
@@ -96,6 +97,9 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
             get_apex_provider(feed),
             None,
             context,
+            None,
+            True,
+            market_time,
         )
         return apply_apex_risk_state(
             payload,
@@ -116,6 +120,7 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
         locked_out: bool = False,
         news_title: str | None = None,
         social_title: str | None = None,
+        market_time: datetime | None = None,
         feed: PriceFeed = Depends(get_price_feed),
     ) -> dict[str, Any]:
         context = {
@@ -128,6 +133,9 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
             get_apex_provider(feed),
             None,
             context,
+            None,
+            True,
+            market_time,
         )
         payload = apply_apex_risk_state(
             payload,

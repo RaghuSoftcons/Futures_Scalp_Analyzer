@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from futures_scalp_analyzer.apex_pipeline import (
     DEFAULT_RISK_SETTINGS,
     MANUAL_EXECUTION_NOTE,
     MarketDataProvider,
     MockMarketDataProvider,
+    build_market_session,
     build_multi_timeframe_trend,
     build_technical_readout,
     build_payload,
@@ -21,6 +25,8 @@ from futures_scalp_analyzer.apex_pipeline import (
 
 CURRENT_TIMESTAMP = "2026-04-24T14:00:00Z"
 STALE_TIMESTAMP = "2026-04-24T13:00:00Z"
+EASTERN = ZoneInfo("America/New_York")
+OPEN_MARKET_TIME = datetime(2026, 4, 27, 10, 0, tzinfo=EASTERN)
 
 
 class EmptyProvider(MarketDataProvider):
@@ -168,7 +174,7 @@ def test_mock_provider_fallback_when_primary_incomplete():
         bars=_bars_from_closes([100.0 + idx for idx in range(30)]),
     )
 
-    payload = build_payload("NQ", provider=EmptyProvider(), fallback_provider=fallback)
+    payload = build_payload("NQ", provider=EmptyProvider(), fallback_provider=fallback, now=OPEN_MARKET_TIME)
 
     assert payload["market_data"]["symbol"] == "NQ"
     assert payload["market_data"]["data_source"] == "mock"
@@ -186,7 +192,7 @@ def test_schwab_quote_is_preserved_when_history_bars_are_unavailable():
         bars=_bars_from_closes([100.0 + idx for idx in range(30)]),
     )
 
-    payload = build_payload("NQ", provider=QuoteOnlySchwabProvider(), fallback_provider=fallback)
+    payload = build_payload("NQ", provider=QuoteOnlySchwabProvider(), fallback_provider=fallback, now=OPEN_MARKET_TIME)
     decision = generate_trade_decision(payload)
 
     assert payload["market_data"]["data_source"] == "schwab"
@@ -205,13 +211,14 @@ def test_build_payload_returns_valid_structured_json():
     payload = build_payload(
         "NQ",
         provider=MockMarketDataProvider(),
+        now=OPEN_MARKET_TIME,
         context={
             "news": [{"title": "Market headline", "source": "CNBC", "url": "https://example.com/news"}],
             "trump_posts_recent": ["Display-only social post"],
         },
     )
 
-    assert set(payload) == {"market_data", "multi_timeframe_trend", "context", "risk_settings", "risk_state", "timestamp"}
+    assert set(payload) == {"market_data", "multi_timeframe_trend", "market_session", "context", "risk_settings", "risk_state", "timestamp"}
     assert set(payload["market_data"]) == {
         "symbol",
         "price",
@@ -235,6 +242,50 @@ def test_build_payload_returns_valid_structured_json():
     assert payload["context"]["context_rule"] == "Display only. Not used in trade decisions."
     assert payload["context"]["social"][0]["source"] == "Truth Social"
     assert set(payload["multi_timeframe_trend"]["timeframes"]) == {"30m", "15m", "5m", "3m", "1m"}
+    assert set(payload["market_session"]) == {
+        "status",
+        "reason",
+        "current_time_et",
+        "current_time_iso",
+        "next_open_time_et",
+        "message",
+        "data_gate_reason",
+        "holiday_note",
+    }
+
+
+def test_market_session_saturday_reports_sunday_reopen():
+    session = build_market_session(datetime(2026, 4, 25, 12, 0, tzinfo=EASTERN))
+
+    assert session["status"] == "closed"
+    assert session["reason"] == "weekend"
+    assert session["data_gate_reason"] == "market closed"
+    assert "Futures reopen Sunday 6:00 PM ET" in session["message"]
+    assert session["current_time_et"] == "Apr 25, 2026, 12:00 PM EDT"
+    assert session["next_open_time_et"] == "Apr 26, 2026, 6:00 PM EDT"
+
+
+def test_market_session_sunday_before_open_reports_today_reopen():
+    session = build_market_session(datetime(2026, 4, 26, 12, 0, tzinfo=EASTERN))
+
+    assert session["status"] == "closed"
+    assert "Futures reopen today at 6:00 PM ET" in session["message"]
+    assert session["next_open_time_et"] == "Apr 26, 2026, 6:00 PM EDT"
+
+
+def test_market_session_maintenance_closes_data_gate():
+    session = build_market_session(datetime(2026, 4, 27, 17, 30, tzinfo=EASTERN))
+
+    assert session["status"] == "maintenance"
+    assert session["data_gate_reason"] == "market maintenance"
+    assert "typically resume at 6:00 PM ET" in session["message"]
+
+
+def test_market_session_open_does_not_set_data_gate_reason():
+    session = build_market_session(datetime(2026, 4, 27, 10, 0, tzinfo=EASTERN))
+
+    assert session["status"] == "open"
+    assert session["data_gate_reason"] == ""
 
 
 def test_timeframe_ema_values():
@@ -319,7 +370,7 @@ def test_stale_timeframe_handling():
 
 
 def test_schwab_success_path_marks_near_real_time_when_fresh():
-    payload = build_payload("NQ", provider=FreshSchwabProvider(), allow_mock_fallback=False)
+    payload = build_payload("NQ", provider=FreshSchwabProvider(), allow_mock_fallback=False, now=OPEN_MARKET_TIME)
 
     assert payload["market_data"]["data_source"] == "schwab"
     assert payload["market_data"]["data_mode"] == "near_real_time"
@@ -329,7 +380,7 @@ def test_schwab_success_path_marks_near_real_time_when_fresh():
 
 
 def test_provider_unavailable_without_mock_fallback_marks_unavailable():
-    payload = build_payload("NQ", provider=EmptyProvider(), allow_mock_fallback=False)
+    payload = build_payload("NQ", provider=EmptyProvider(), allow_mock_fallback=False, now=OPEN_MARKET_TIME)
 
     assert payload["market_data"]["data_source"] == "unavailable"
     assert payload["market_data"]["data_mode"] == "unavailable"
@@ -340,7 +391,7 @@ def test_provider_unavailable_without_mock_fallback_marks_unavailable():
 
 
 def test_unavailable_market_data_returns_no_trade():
-    payload = build_payload("NQ", provider=EmptyProvider(), allow_mock_fallback=False)
+    payload = build_payload("NQ", provider=EmptyProvider(), allow_mock_fallback=False, now=OPEN_MARKET_TIME)
 
     decision = generate_trade_decision(payload)
 
@@ -350,8 +401,41 @@ def test_unavailable_market_data_returns_no_trade():
     assert decision["data_gate_status"] == "closed"
 
 
+def test_market_closed_blocks_trade_even_when_technical_data_is_valid():
+    payload = build_payload(
+        "NQ",
+        provider=FreshSchwabProvider(),
+        allow_mock_fallback=False,
+        now=datetime(2026, 4, 25, 12, 0, tzinfo=EASTERN),
+    )
+
+    decision = generate_trade_decision(payload)
+
+    assert payload["market_session"]["status"] == "closed"
+    assert payload["market_data"]["data_gate_status"] == "closed"
+    assert payload["market_data"]["data_gate_reason"] == "market closed"
+    assert decision["recommendation"] == "NO TRADE"
+    assert decision["risk_status"] == "allowed"
+    assert decision["data_gate_status"] == "closed"
+    assert decision["no_trade_reason"] == "market closed"
+
+
+def test_technical_readout_uses_market_session_message_when_closed():
+    payload = build_payload(
+        "NQ",
+        provider=FreshSchwabProvider(),
+        allow_mock_fallback=False,
+        now=datetime(2026, 4, 25, 12, 0, tzinfo=EASTERN),
+    )
+    decision = generate_trade_decision(payload)
+
+    readout = build_technical_readout(payload, decision)
+
+    assert readout["summary"].startswith("Market Closed — Futures reopen Sunday 6:00 PM ET.")
+
+
 def test_stale_market_data_returns_no_trade():
-    payload = build_payload("NQ", provider=StaleSchwabProvider(), allow_mock_fallback=False)
+    payload = build_payload("NQ", provider=StaleSchwabProvider(), allow_mock_fallback=False, now=OPEN_MARKET_TIME)
 
     decision = generate_trade_decision(payload)
 
@@ -557,8 +641,8 @@ def test_technical_readout_includes_multi_timeframe_summary():
 
 
 def test_multi_timeframe_trend_ignores_news_and_social_context():
-    payload_a = build_payload("ES", provider=MockMarketDataProvider(), context={"news": [{"title": "A", "source": "news", "url": ""}]})
-    payload_b = build_payload("ES", provider=MockMarketDataProvider(), context={"social": [{"title": "B", "source": "Truth Social", "url": ""}]})
+    payload_a = build_payload("ES", provider=MockMarketDataProvider(), context={"news": [{"title": "A", "source": "news", "url": ""}]}, now=OPEN_MARKET_TIME)
+    payload_b = build_payload("ES", provider=MockMarketDataProvider(), context={"social": [{"title": "B", "source": "Truth Social", "url": ""}]}, now=OPEN_MARKET_TIME)
 
     assert payload_a["multi_timeframe_trend"]["dominant_trend"] == payload_b["multi_timeframe_trend"]["dominant_trend"]
     assert payload_a["multi_timeframe_trend"]["alignment_summary"] == payload_b["multi_timeframe_trend"]["alignment_summary"]

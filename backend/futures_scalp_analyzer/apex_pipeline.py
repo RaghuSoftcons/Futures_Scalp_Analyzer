@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .price_feed import SchwabQuotePriceFeed
 
@@ -17,6 +18,7 @@ DATA_GATE_CLOSED = "closed"
 REQUIRED_MARKET_DATA_FIELDS = ("price", "vwap", "ema9", "ema20", "rsi", "trend")
 MULTI_TIMEFRAMES = ("30m", "15m", "5m", "3m", "1m")
 MTF_REQUIRED_BARS = 50
+EASTERN_TZ = ZoneInfo("America/New_York")
 
 DEFAULT_RISK_SETTINGS: dict[str, float | int] = {
     "max_daily_loss": 2000.00,
@@ -192,6 +194,7 @@ def build_payload(
     context: dict[str, Any] | None = None,
     risk_settings: dict[str, float | int] | None = None,
     allow_mock_fallback: bool = True,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Build the Apex market data, context, and risk payload."""
 
@@ -218,11 +221,16 @@ def build_payload(
         data_source = "unavailable"
         provider_status = "unavailable"
 
+    market_session = build_market_session(now)
     market_data = _build_market_data(symbol, quote, bars, data_source, provider_status)
+    if market_session["status"] in {"closed", "maintenance"}:
+        market_data["data_gate_status"] = DATA_GATE_CLOSED
+        market_data["data_gate_reason"] = market_session["data_gate_reason"]
     multi_timeframe_trend = build_multi_timeframe_trend(symbol, active_provider, data_source, provider_status)
     return {
         "market_data": market_data,
         "multi_timeframe_trend": multi_timeframe_trend,
+        "market_session": market_session,
         "context": _build_display_context(context),
         "risk_settings": _format_risk_settings(risk_settings or DEFAULT_RISK_SETTINGS),
         "risk_state": {
@@ -246,7 +254,12 @@ def generate_trade_decision(payload: dict[str, Any]) -> dict[str, Any]:
         "context_rule": DISPLAY_CONTEXT_RULE,
     }
     market_data = payload.get("market_data", {})
+    market_session = payload.get("market_session", {})
     data_gate_status, data_gate_reason = _evaluate_data_gate(market_data)
+
+    if market_session.get("status") in {"closed", "maintenance"}:
+        data_gate_status = DATA_GATE_CLOSED
+        data_gate_reason = str(market_session.get("data_gate_reason") or "market closed")
 
     if risk_status == "blocked":
         return {
@@ -352,7 +365,11 @@ def build_technical_readout(payload: dict[str, Any], decision: dict[str, Any]) -
     data_gate_status = str(decision.get("data_gate_status") or market_data.get("data_gate_status") or "").lower()
     if data_gate_status == DATA_GATE_CLOSED:
         safety_reason = str(decision.get("data_gate_reason") or market_data.get("data_gate_reason") or "")
-        if "stale" in safety_reason.lower():
+        market_session = payload.get("market_session", {})
+        session_message = str(market_session.get("message") or "")
+        if market_session.get("status") in {"closed", "maintenance"} and session_message:
+            safety_note = f"{session_message}"
+        elif "stale" in safety_reason.lower():
             safety_note = (
                 "Market data is stale. Technical readout is shown for context only. "
                 "Trade recommendations are blocked until data freshness is restored."
@@ -537,6 +554,73 @@ def _data_mode_for_source(data_source: str) -> str:
     if data_source == "mock":
         return "mock"
     return "unavailable"
+
+
+def build_market_session(now: datetime | None = None) -> dict[str, Any]:
+    current_et = _to_eastern(now or datetime.now(timezone.utc))
+    weekday = current_et.weekday()
+    minutes = (current_et.hour * 60) + current_et.minute
+
+    status = "open"
+    reason = "regular_session"
+    next_open = None
+    message = "Market Open — Futures session appears open."
+    data_gate_reason = ""
+
+    if weekday == 5:
+        status = "closed"
+        reason = "weekend"
+        next_open = _next_sunday_open(current_et)
+        message = "Market Closed — Futures reopen Sunday 6:00 PM ET. Showing last available quote only. Bar-based indicators and trade recommendations are disabled."
+        data_gate_reason = "market closed"
+    elif weekday == 6 and minutes < (18 * 60):
+        status = "closed"
+        reason = "weekend"
+        next_open = current_et.replace(hour=18, minute=0, second=0, microsecond=0)
+        message = "Market Closed — Futures reopen today at 6:00 PM ET. Showing last available quote only. Bar-based indicators and trade recommendations are disabled."
+        data_gate_reason = "market closed"
+    elif weekday == 4 and minutes >= (17 * 60):
+        status = "closed"
+        reason = "weekend"
+        next_open = _next_sunday_open(current_et)
+        message = "Market Closed — Futures reopen Sunday 6:00 PM ET. Showing last available quote only. Bar-based indicators and trade recommendations are disabled."
+        data_gate_reason = "market closed"
+    elif weekday in {0, 1, 2, 3} and (17 * 60) <= minutes < (18 * 60):
+        status = "maintenance"
+        reason = "daily_maintenance"
+        next_open = current_et.replace(hour=18, minute=0, second=0, microsecond=0)
+        message = "Market Paused — Futures typically resume at 6:00 PM ET. Showing last available quote only. Bar-based indicators and trade recommendations are disabled."
+        data_gate_reason = "market maintenance"
+
+    return {
+        "status": status,
+        "reason": reason,
+        "current_time_et": _format_et(current_et),
+        "current_time_iso": current_et.isoformat(),
+        "next_open_time_et": _format_et(next_open) if next_open else "",
+        "message": message,
+        "data_gate_reason": data_gate_reason,
+        "holiday_note": "Holiday schedules can differ. If data does not update during normal hours, the market may be closed. Wait until the next market open.",
+    }
+
+
+def _to_eastern(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(EASTERN_TZ)
+
+
+def _next_sunday_open(current_et: datetime) -> datetime:
+    days_until_sunday = (6 - current_et.weekday()) % 7
+    if days_until_sunday == 0 and (current_et.hour, current_et.minute) >= (18, 0):
+        days_until_sunday = 7
+    return current_et.replace(hour=18, minute=0, second=0, microsecond=0) + timedelta(days=days_until_sunday)
+
+
+def _format_et(value: datetime) -> str:
+    eastern = value.astimezone(EASTERN_TZ)
+    hour = eastern.hour % 12 or 12
+    return f"{eastern.strftime('%b')} {eastern.day}, {eastern.year}, {hour}:{eastern.minute:02d} {eastern.strftime('%p %Z')}"
 
 
 def _resolve_last_update_time(quote: dict[str, Any], bars: list[dict[str, Any]]) -> str:

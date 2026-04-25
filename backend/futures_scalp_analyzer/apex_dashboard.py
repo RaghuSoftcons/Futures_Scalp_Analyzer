@@ -188,6 +188,24 @@ def render_apex_dashboard() -> str:
       font-weight: 800;
       font-size: 17px;
     }}
+    .market-session-warning {{
+      display: none;
+      margin: -6px 0 18px;
+      padding: 13px 15px;
+      border: 1px solid rgba(255, 209, 139, .55);
+      background: rgba(209, 154, 56, .11);
+      border-left: 4px solid var(--none);
+      border-radius: 6px;
+      color: #ffe0a3;
+      font-weight: 800;
+      font-size: 17px;
+    }}
+    .market-session-warning.open {{
+      border-color: rgba(88, 196, 141, .35);
+      background: rgba(88, 196, 141, .08);
+      border-left-color: var(--allowed);
+      color: #b9efcf;
+    }}
     .status-message {{
       min-height: 20px;
       margin-left: 2px;
@@ -344,6 +362,7 @@ def render_apex_dashboard() -> str:
     </section>
 
     <div class="notice">{MANUAL_EXECUTION_NOTE}</div>
+    <div id="market-session-warning" class="market-session-warning"></div>
     <div id="mock-warning" class="mock-warning">Mock Data &mdash; Not Live Market Data</div>
     <div id="stale-warning" class="stale-warning">Data Stale &mdash; Verify Before Trading</div>
     <div id="quick-status" class="quick-status" aria-label="Quick Status">
@@ -599,6 +618,7 @@ def render_apex_dashboard() -> str:
         const payload = await payloadResponse.json();
         const decisionEnvelope = await decisionResponse.json();
         const market = payload.market_data || {{}};
+        const marketSession = payload.market_session || {{}};
         window.currentMultiTimeframeTrend = payload.multi_timeframe_trend || {{}};
         const decision = decisionEnvelope.decision || {{}};
         const technicalReadout = decisionEnvelope.technical_readout || {{}};
@@ -612,6 +632,15 @@ def render_apex_dashboard() -> str:
         document.getElementById("data-mode").textContent = "Mode: " + fmtValue("data_mode", market.data_mode || "unavailable");
         document.getElementById("provider-status").textContent = "Provider: " + fmtValue("provider_status", market.provider_status || "unavailable");
         document.getElementById("mock-warning").style.display = market.data_source === "mock" ? "block" : "none";
+        const sessionWarning = document.getElementById("market-session-warning");
+        if (marketSession.message) {{
+          sessionWarning.style.display = "block";
+          sessionWarning.className = marketSession.status === "open" ? "market-session-warning open" : "market-session-warning";
+          sessionWarning.textContent = marketSession.message + (marketSession.current_time_et ? " Current ET: " + marketSession.current_time_et : "");
+        }} else {{
+          sessionWarning.style.display = "none";
+          sessionWarning.textContent = "";
+        }}
         const staleWarning = document.getElementById("stale-warning");
         staleWarning.style.display = market.is_stale ? "block" : "none";
         staleWarning.textContent = market.stale_reason ? "Data Stale — Verify Before Trading: " + market.stale_reason : "Data Stale — Verify Before Trading";

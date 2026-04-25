@@ -86,6 +86,9 @@ def test_dashboard_route_contains_required_static_contract():
     assert 'timeZone: "UTC"' not in body
     assert "Data Stale &mdash; Verify Before Trading" in body
     assert "stale-warning" in body
+    assert "market-session-warning" in body
+    assert "marketSession.message" in body
+    assert "Current ET:" in body
     assert "data-mode" in body
     assert "provider-status" in body
     assert "DATA GATE OPEN" in body
