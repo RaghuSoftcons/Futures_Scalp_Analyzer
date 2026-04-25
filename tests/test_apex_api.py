@@ -44,9 +44,10 @@ def test_apex_payload_endpoint_returns_valid_json():
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"market_data", "context", "risk_settings", "risk_state", "timestamp"}
+    assert set(body) == {"market_data", "multi_timeframe_trend", "context", "risk_settings", "risk_state", "timestamp"}
     assert body["market_data"]["symbol"] == "NQ"
     assert body["market_data"]["data_source"] == "mock"
+    assert "timeframes" in body["multi_timeframe_trend"]
     assert body["market_data"]["data_mode"] == "mock"
     assert body["market_data"]["provider_status"] == "connected"
     assert body["market_data"]["data_gate_status"] == "closed"
@@ -74,6 +75,7 @@ def test_apex_decision_endpoint_returns_payload_and_decision():
     body = response.json()
     assert set(body) == {"payload", "decision", "technical_readout", "timestamp"}
     assert "market_data" in body["payload"]
+    assert "multi_timeframe_trend" in body["payload"]
     assert "context" in body["payload"]
     assert "risk_settings" in body["payload"]
     assert body["decision"]["recommendation"] in {"LONG", "SHORT", "NO TRADE"}

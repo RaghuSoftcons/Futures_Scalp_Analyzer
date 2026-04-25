@@ -130,3 +130,33 @@ Dashboard rules:
 - Continue showing `Mock Data - Not Live Market Data` when mock data is used.
 - Do not calculate trade decisions in the browser.
 - Do not add broker order placement or auto-trading.
+
+## Phase 3A Multi-Timeframe EMA Stack Notes
+
+Phase 3A adds `multi_timeframe_trend` to `/apex/payload/{symbol}` and `/apex/decision/{symbol}`.
+
+Required timeframes:
+
+- `30m`
+- `15m`
+- `5m`
+- `3m`
+- `1m`
+
+Each timeframe row includes EMA 9, EMA 21, EMA 50, stack status, trend, price-vs-EMA relationships, last bar time, stale status, and stale reason.
+
+Stack rules:
+
+- `bullish_stack`: EMA 9 > EMA 21 > EMA 50
+- `bearish_stack`: EMA 9 < EMA 21 < EMA 50
+- `mixed_stack`: anything else
+
+Trend rules:
+
+- `strong_bullish`: price > EMA 9 and bullish stack
+- `bullish`: bullish stack but price is not above EMA 9
+- `strong_bearish`: price < EMA 9 and bearish stack
+- `bearish`: bearish stack but price is not below EMA 9
+- `mixed`: EMAs are not clearly stacked
+
+The multi-timeframe panel is context-only in Phase 3A. It must not change the main trade decision rules unless separately approved. News, Truth Social, and social context must not affect multi-timeframe trend.

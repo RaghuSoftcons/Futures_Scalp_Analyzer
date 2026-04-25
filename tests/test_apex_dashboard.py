@@ -72,6 +72,10 @@ def test_dashboard_route_contains_required_static_contract():
     body = response.text
     assert "Apex Scalp Engine" in body
     assert "Technical Readout" in body
+    assert "Multi-Timeframe Trend" in body
+    assert "multi-timeframe-trend" in body
+    assert "renderMultiTimeframeTrend" in body
+    assert "MTF: " in body
     assert "Quick Status" in body
     assert "quick-status" in body
     assert "renderQuickStatus" in body
@@ -87,6 +91,7 @@ def test_dashboard_route_contains_required_static_contract():
     assert "DATA GATE OPEN" in body
     assert "DATA GATE CLOSED" in body
     assert "data-gate-badge" in body
+    assert "mini-bullish" in body
     assert "Last Update:" in body
     assert "Price vs VWAP" in body
     assert "Decision Comment" in body

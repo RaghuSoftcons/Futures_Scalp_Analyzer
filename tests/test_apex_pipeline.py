@@ -5,12 +5,16 @@ from futures_scalp_analyzer.apex_pipeline import (
     MANUAL_EXECUTION_NOTE,
     MarketDataProvider,
     MockMarketDataProvider,
+    build_multi_timeframe_trend,
     build_technical_readout,
     build_payload,
+    build_timeframe_trend,
     calculate_ema,
     calculate_rsi,
     calculate_vwap,
+    classify_ema_stack,
     classify_trend,
+    classify_timeframe_trend,
     generate_trade_decision,
 )
 
@@ -47,6 +51,19 @@ class StaleSchwabProvider(MarketDataProvider):
 
     def get_bars(self, symbol: str, timeframe: str, lookback: int) -> list[dict]:
         return _bars_from_closes([120.0 + idx for idx in range(30)], timestamp=STALE_TIMESTAMP)
+
+
+class MultiTimeframeProvider(MarketDataProvider):
+    data_source = "schwab"
+
+    def __init__(self, closes_by_timeframe: dict[str, list[float]]) -> None:
+        self.closes_by_timeframe = closes_by_timeframe
+
+    def get_quote(self, symbol: str) -> dict:
+        return {"symbol": symbol, "price": 100.0, "timestamp": CURRENT_TIMESTAMP, "data_source": self.data_source}
+
+    def get_bars(self, symbol: str, timeframe: str, lookback: int) -> list[dict]:
+        return _bars_from_closes(self.closes_by_timeframe[timeframe], timestamp=1_800_000_000_000)
 
 
 def _bars_from_closes(closes: list[float], volume: float = 100.0, timestamp=0) -> list[dict]:
@@ -158,7 +175,7 @@ def test_build_payload_returns_valid_structured_json():
         },
     )
 
-    assert set(payload) == {"market_data", "context", "risk_settings", "risk_state", "timestamp"}
+    assert set(payload) == {"market_data", "multi_timeframe_trend", "context", "risk_settings", "risk_state", "timestamp"}
     assert set(payload["market_data"]) == {
         "symbol",
         "price",
@@ -181,6 +198,88 @@ def test_build_payload_returns_valid_structured_json():
         }
     assert payload["context"]["context_rule"] == "Display only. Not used in trade decisions."
     assert payload["context"]["social"][0]["source"] == "Truth Social"
+    assert set(payload["multi_timeframe_trend"]["timeframes"]) == {"30m", "15m", "5m", "3m", "1m"}
+
+
+def test_timeframe_ema_values():
+    bars = _bars_from_closes([float(idx) for idx in range(1, 81)], timestamp=1_800_000_000_000)
+
+    row = build_timeframe_trend("1m", bars, "schwab", "connected")
+
+    assert row["ema9"] == 76.0
+    assert row["ema21"] == 70.0
+    assert row["ema50"] == 55.5
+
+
+def test_ema_stack_detection():
+    assert classify_ema_stack(3.0, 2.0, 1.0) == "bullish_stack"
+    assert classify_ema_stack(1.0, 2.0, 3.0) == "bearish_stack"
+    assert classify_ema_stack(2.0, 1.0, 3.0) == "mixed_stack"
+
+
+def test_timeframe_trend_detection():
+    assert classify_timeframe_trend(4.0, 3.0, 2.0, 1.0) == "strong_bullish"
+    assert classify_timeframe_trend(2.0, 3.0, 2.0, 1.0) == "bullish"
+    assert classify_timeframe_trend(0.5, 1.0, 2.0, 3.0) == "strong_bearish"
+    assert classify_timeframe_trend(2.0, 1.0, 2.0, 3.0) == "bearish"
+    assert classify_timeframe_trend(2.0, 3.0, 1.0, 2.0) == "mixed"
+
+
+def test_dominant_trend_bullish_with_three_of_five_timeframes():
+    provider = MultiTimeframeProvider(
+        {
+            "30m": [float(idx) for idx in range(1, 81)],
+            "15m": [float(idx) for idx in range(1, 81)],
+            "5m": [float(idx) for idx in range(1, 81)],
+            "3m": [100.0 for _ in range(80)],
+            "1m": [100.0 for _ in range(80)],
+        }
+    )
+
+    trend = build_multi_timeframe_trend("ES", provider, "schwab", "connected")
+
+    assert trend["dominant_trend"] == "bullish"
+    assert trend["all_timeframes_aligned"] is False
+
+
+def test_dominant_trend_bearish_with_three_of_five_timeframes():
+    provider = MultiTimeframeProvider(
+        {
+            "30m": [float(100 - idx) for idx in range(80)],
+            "15m": [float(100 - idx) for idx in range(80)],
+            "5m": [float(100 - idx) for idx in range(80)],
+            "3m": [100.0 for _ in range(80)],
+            "1m": [100.0 for _ in range(80)],
+        }
+    )
+
+    trend = build_multi_timeframe_trend("ES", provider, "schwab", "connected")
+
+    assert trend["dominant_trend"] == "bearish"
+    assert trend["all_timeframes_aligned"] is False
+
+
+def test_dominant_trend_mixed_without_majority():
+    provider = MultiTimeframeProvider(
+        {
+            "30m": [float(idx) for idx in range(1, 81)],
+            "15m": [float(idx) for idx in range(1, 81)],
+            "5m": [float(100 - idx) for idx in range(80)],
+            "3m": [float(100 - idx) for idx in range(80)],
+            "1m": [100.0 for _ in range(80)],
+        }
+    )
+
+    trend = build_multi_timeframe_trend("ES", provider, "schwab", "connected")
+
+    assert trend["dominant_trend"] == "mixed"
+
+
+def test_stale_timeframe_handling():
+    row = build_timeframe_trend("1m", _bars_from_closes([float(idx) for idx in range(80)], timestamp=STALE_TIMESTAMP), "schwab", "connected")
+
+    assert row["is_stale"] is True
+    assert row["stale_reason"] == "timeframe data stale"
 
 
 def test_schwab_success_path_marks_near_real_time_when_fresh():
@@ -405,6 +504,28 @@ def test_technical_readout_data_gate_closed_stale_safety_note():
         "Market data is stale. Technical readout is shown for context only. "
         "Trade recommendations are blocked until data freshness is restored."
     )
+
+
+def test_technical_readout_includes_multi_timeframe_summary():
+    payload = _payload_for_decision()
+    payload["multi_timeframe_trend"] = {
+        "dominant_trend": "bullish",
+        "alignment_summary": "Multi-timeframe trend is bullish across 3 of 5 timeframes.",
+        "data_gate_status": "open",
+    }
+    decision = generate_trade_decision(payload)
+
+    readout = build_technical_readout(payload, decision)
+
+    assert "Multi-timeframe trend is bullish across 3 of 5 timeframes." in readout["summary"]
+
+
+def test_multi_timeframe_trend_ignores_news_and_social_context():
+    payload_a = build_payload("ES", provider=MockMarketDataProvider(), context={"news": [{"title": "A", "source": "news", "url": ""}]})
+    payload_b = build_payload("ES", provider=MockMarketDataProvider(), context={"social": [{"title": "B", "source": "Truth Social", "url": ""}]})
+
+    assert payload_a["multi_timeframe_trend"]["dominant_trend"] == payload_b["multi_timeframe_trend"]["dominant_trend"]
+    assert payload_a["multi_timeframe_trend"]["alignment_summary"] == payload_b["multi_timeframe_trend"]["alignment_summary"]
 
 
 def test_technical_readout_ignores_news_and_social_context():

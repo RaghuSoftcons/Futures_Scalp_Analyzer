@@ -291,6 +291,24 @@ def render_apex_dashboard() -> str:
       line-height: 1.4;
     }}
     .readout-item span {{ display: block; color: #b3c0ce; font-size: 14px; font-weight: 650; margin-bottom: 5px; }}
+    .mtf-table {{ display: grid; gap: 8px; }}
+    .mtf-row {{
+      display: grid;
+      grid-template-columns: .7fr 1fr 1fr .9fr .9fr .9fr 1fr;
+      gap: 8px;
+      align-items: center;
+      padding: 10px;
+      border: 1px solid #1f2c38;
+      border-radius: 6px;
+      background: #0e151d;
+      font-size: 15px;
+    }}
+    .mtf-row.header {{ color: #b3c0ce; font-weight: 750; background: transparent; border: 0; padding-top: 0; }}
+    .mini-badge {{ display: inline-flex; width: fit-content; padding: 4px 8px; border-radius: 999px; font-size: 13px; font-weight: 800; }}
+    .mini-bullish {{ color: #9ee6bd; background: rgba(88, 196, 141, .14); border: 1px solid rgba(158, 230, 189, .35); }}
+    .mini-bearish {{ color: #ffb0b0; background: rgba(255, 92, 92, .14); border: 1px solid rgba(255, 176, 176, .35); }}
+    .mini-mixed {{ color: #ffd18b; background: rgba(209, 154, 56, .14); border: 1px solid rgba(255, 209, 139, .35); }}
+    .mini-stale {{ color: #ffc4c4; background: rgba(255, 92, 92, .18); border: 1px solid rgba(255, 176, 176, .45); }}
     .muted {{ color: var(--muted); }}
     .error {{ color: #ffb0b0; }}
     .wide {{ grid-column: 1 / -1; }}
@@ -299,6 +317,8 @@ def render_apex_dashboard() -> str:
       .topbar, .grid {{ grid-template-columns: 1fr; }}
       .controls {{ justify-content: flex-start; }}
       .metrics, .readout-list {{ grid-template-columns: 1fr; }}
+      .mtf-row {{ grid-template-columns: 1fr; }}
+      .mtf-row.header {{ display: none; }}
     }}
   </style>
 </head>
@@ -345,6 +365,11 @@ def render_apex_dashboard() -> str:
           <span id="data-gate-badge" class="badge data-blocked">DATA GATE CLOSED</span>
         </div>
         <div class="metrics" id="decision-data"></div>
+      </section>
+
+      <section class="panel wide">
+        <h2>Multi-Timeframe Trend</h2>
+        <div id="multi-timeframe-trend" class="mtf-table"></div>
       </section>
 
       <section class="panel wide">
@@ -484,18 +509,73 @@ def render_apex_dashboard() -> str:
       `;
     }}
 
+    function labelize(value) {{
+      return String(value || "unavailable").replaceAll("_", " ").replace(/\\b\\w/g, (char) => char.toUpperCase());
+    }}
+
+    function trendMiniClass(value) {{
+      const normalized = String(value || "").toLowerCase();
+      if (normalized.includes("stale")) return "mini-badge mini-stale";
+      if (normalized.includes("bullish")) return "mini-badge mini-bullish";
+      if (normalized.includes("bearish")) return "mini-badge mini-bearish";
+      return "mini-badge mini-mixed";
+    }}
+
+    function stackMiniClass(value) {{
+      const normalized = String(value || "").toLowerCase();
+      if (normalized === "bullish_stack") return "mini-badge mini-bullish";
+      if (normalized === "bearish_stack") return "mini-badge mini-bearish";
+      return "mini-badge mini-mixed";
+    }}
+
+    function renderMultiTimeframeTrend(mtf) {{
+      const container = document.getElementById("multi-timeframe-trend");
+      if (!mtf || !mtf.timeframes) {{
+        container.innerHTML = '<div class="context-item muted">Multi-timeframe trend unavailable.</div>';
+        return;
+      }}
+      const order = ["30m", "15m", "5m", "3m", "1m"];
+      const rows = order.map((timeframe) => {{
+        const row = mtf.timeframes[timeframe] || {{}};
+        const trendText = row.is_stale ? "Stale" : labelize(row.trend);
+        const stackText = row.is_stale ? "Stale" : labelize(row.ema_stack_status);
+        return `
+          <div class="mtf-row">
+            <strong>${{timeframe}}</strong>
+            <span class="${{trendMiniClass(trendText)}}">${{trendText}}</span>
+            <span class="${{stackMiniClass(row.is_stale ? "stale" : row.ema_stack_status)}}">${{stackText}}</span>
+            <span>${{labelize(row.price_vs_ema9)}}</span>
+            <span>${{labelize(row.price_vs_ema21)}}</span>
+            <span>${{labelize(row.price_vs_ema50)}}</span>
+            <span>${{row.last_bar_time ? prettyTimestamp(row.last_bar_time) : (row.stale_reason || "Unavailable")}}</span>
+          </div>
+        `;
+      }}).join("");
+      container.innerHTML = `
+        <div class="readout-summary">${{mtf.alignment_summary || "Multi-timeframe trend unavailable."}}</div>
+        <div class="mtf-row header">
+          <span>Timeframe</span><span>Trend</span><span>EMA Stack</span><span>Price vs EMA 9</span><span>Price vs EMA 21</span><span>Price vs EMA 50</span><span>Last Bar</span>
+        </div>
+        ${{rows}}
+      `;
+    }}
+
     function renderQuickStatus(market, decision, readout) {{
       const relationships = readout.price_relationships || [];
+      const mtf = window.currentMultiTimeframeTrend || {{}};
       const recommendation = decision.recommendation || "NO TRADE";
       const riskStatus = decision.risk_status || "allowed";
       const dataGateStatus = decision.data_gate_status || market.data_gate_status || "closed";
       const riskText = riskStatus === "blocked" ? "RISK GATE CLOSED" : "RISK GATE OPEN";
       const dataGateText = dataGateStatus === "open" ? "DATA GATE OPEN" : "DATA GATE CLOSED";
+      const mtfRows = Object.values(mtf.timeframes || {{}});
+      const mtfText = mtfRows.some((row) => row && row.is_stale) ? "MTF: Stale" : "MTF: " + labelize(mtf.dominant_trend || "mixed");
       const trendText = prettyTrend(market.trend || "neutral").toUpperCase();
       const items = [
         [recommendation, "strong"],
         [riskText, "strong"],
         [dataGateText, "strong"],
+        [mtfText, "strong"],
         [trendText, "strong"],
         [relationships[0] || "Price vs VWAP unavailable.", ""],
         [relationships[1] || "Price vs EMA 9 unavailable.", ""],
@@ -519,6 +599,7 @@ def render_apex_dashboard() -> str:
         const payload = await payloadResponse.json();
         const decisionEnvelope = await decisionResponse.json();
         const market = payload.market_data || {{}};
+        window.currentMultiTimeframeTrend = payload.multi_timeframe_trend || {{}};
         const decision = decisionEnvelope.decision || {{}};
         const technicalReadout = decisionEnvelope.technical_readout || {{}};
         if (!payload.market_data || !payload.context || !payload.risk_settings || !decisionEnvelope.decision) {{
@@ -558,6 +639,7 @@ def render_apex_dashboard() -> str:
           metric("no_trade_reason", decision.no_trade_reason || "none", {{ className: recommendation === "NO TRADE" ? "warning" : "" }}),
           metric("manual_execution_note", decision.manual_execution_note)
         ].join("");
+        renderMultiTimeframeTrend(payload.multi_timeframe_trend || {{}});
         renderTechnicalReadout(technicalReadout);
         renderQuickStatus(market, decision, technicalReadout);
         renderContext(decision);

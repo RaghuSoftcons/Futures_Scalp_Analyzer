@@ -15,6 +15,8 @@ STALE_MARKET_DATA_SECONDS = 120
 DATA_GATE_OPEN = "open"
 DATA_GATE_CLOSED = "closed"
 REQUIRED_MARKET_DATA_FIELDS = ("price", "vwap", "ema9", "ema20", "rsi", "trend")
+MULTI_TIMEFRAMES = ("30m", "15m", "5m", "3m", "1m")
+MTF_REQUIRED_BARS = 50
 
 DEFAULT_RISK_SETTINGS: dict[str, float | int] = {
     "max_daily_loss": 2000.00,
@@ -82,7 +84,7 @@ class MockMarketDataProvider(MarketDataProvider):
         bars: list[dict[str, Any]] | None = None,
     ) -> None:
         self._quote = quote or {"symbol": "NQ", "price": 101.0}
-        self._bars = bars or make_mock_bars()
+        self._bars = bars
 
     def get_quote(self, symbol: str) -> dict[str, Any]:
         quote = dict(self._quote)
@@ -92,13 +94,21 @@ class MockMarketDataProvider(MarketDataProvider):
         return quote
 
     def get_bars(self, symbol: str, timeframe: str, lookback: int) -> list[dict[str, Any]]:
-        del symbol, timeframe, lookback
-        return [dict(bar) for bar in self._bars]
+        del symbol, lookback
+        if self._bars is not None:
+            return [dict(bar) for bar in self._bars]
+        return make_mock_bars(timeframe=timeframe)
 
 
-def make_mock_bars(count: int = 30, start: float = 100.0, step: float = 0.25) -> list[dict[str, Any]]:
+def make_mock_bars(
+    count: int = 80,
+    start: float = 100.0,
+    step: float = 0.25,
+    timeframe: str = "1m",
+) -> list[dict[str, Any]]:
     bars: list[dict[str, Any]] = []
     base_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+    interval_ms = _timeframe_minutes(timeframe) * 60_000
     pullbacks = (0.0, 0.35, -0.15, 0.25, -0.30, 0.10)
     for idx in range(count):
         close = start + (idx * step * 0.35) + pullbacks[idx % len(pullbacks)]
@@ -109,7 +119,7 @@ def make_mock_bars(count: int = 30, start: float = 100.0, step: float = 0.25) ->
                 "low": close - 0.25,
                 "close": close,
                 "volume": 1000 + idx,
-                "datetime": base_time + (idx * 60_000),
+                "datetime": base_time - ((count - idx - 1) * interval_ms),
             }
         )
     return bars
@@ -187,6 +197,7 @@ def build_payload(
 
     selected_provider = provider or SchwabMarketDataProvider()
     fallback = fallback_provider or MockMarketDataProvider()
+    active_provider = selected_provider
 
     quote = selected_provider.get_quote(symbol)
     bars = selected_provider.get_bars(symbol, "1m", 1)
@@ -197,6 +208,7 @@ def build_payload(
         quote = fallback.get_quote(symbol)
         bars = fallback.get_bars(symbol, "1m", 1)
         if _has_valid_market_data(quote, bars):
+            active_provider = fallback
             data_source = fallback.data_source
             provider_status = "fallback"
         else:
@@ -207,8 +219,10 @@ def build_payload(
         provider_status = "unavailable"
 
     market_data = _build_market_data(symbol, quote, bars, data_source, provider_status)
+    multi_timeframe_trend = build_multi_timeframe_trend(symbol, active_provider, data_source, provider_status)
     return {
         "market_data": market_data,
+        "multi_timeframe_trend": multi_timeframe_trend,
         "context": _build_display_context(context),
         "risk_settings": _format_risk_settings(risk_settings or DEFAULT_RISK_SETTINGS),
         "risk_state": {
@@ -349,6 +363,7 @@ def build_technical_readout(payload: dict[str, Any], decision: dict[str, Any]) -
                 "Trade recommendations are blocked until data quality is restored."
             )
         summary = f"{safety_note} {summary}"
+    summary = f"{summary} {_multi_timeframe_summary_sentence(payload.get('multi_timeframe_trend', {}))}"
 
     return {
         "summary": summary,
@@ -358,6 +373,117 @@ def build_technical_readout(payload: dict[str, Any], decision: dict[str, Any]) -
         "trend_comment": trend_comment,
         "decision_comment": decision_comment,
     }
+
+
+def build_multi_timeframe_trend(
+    symbol: str,
+    provider: MarketDataProvider,
+    data_source: str,
+    provider_status: str,
+) -> dict[str, Any]:
+    timeframes: dict[str, dict[str, Any]] = {}
+    for timeframe in MULTI_TIMEFRAMES:
+        try:
+            bars = provider.get_bars(symbol, timeframe, 2)
+        except Exception:
+            bars = []
+        timeframes[timeframe] = build_timeframe_trend(
+            timeframe=timeframe,
+            bars=bars,
+            data_source=data_source,
+            provider_status=provider_status,
+        )
+
+    trend_values = [row["trend"] for row in timeframes.values() if not row["is_stale"]]
+    bullish_count = sum(1 for trend in trend_values if trend in {"strong_bullish", "bullish"})
+    bearish_count = sum(1 for trend in trend_values if trend in {"strong_bearish", "bearish"})
+    all_timeframes_aligned = len(trend_values) == len(MULTI_TIMEFRAMES) and (
+        bullish_count == len(MULTI_TIMEFRAMES) or bearish_count == len(MULTI_TIMEFRAMES)
+    )
+    if bullish_count >= 3:
+        dominant_trend = "bullish"
+    elif bearish_count >= 3:
+        dominant_trend = "bearish"
+    else:
+        dominant_trend = "mixed"
+
+    any_stale = any(row["is_stale"] for row in timeframes.values())
+    if any_stale:
+        data_gate_status = DATA_GATE_CLOSED
+    elif data_source in {"schwab"} and provider_status == "connected":
+        data_gate_status = DATA_GATE_OPEN
+    else:
+        data_gate_status = DATA_GATE_CLOSED
+
+    return {
+        "symbol": symbol.upper(),
+        "source": data_source,
+        "timeframes": timeframes,
+        "alignment_summary": _alignment_summary(dominant_trend, bullish_count, bearish_count, any_stale),
+        "dominant_trend": dominant_trend,
+        "all_timeframes_aligned": all_timeframes_aligned,
+        "data_gate_status": data_gate_status,
+    }
+
+
+def build_timeframe_trend(
+    timeframe: str,
+    bars: list[dict[str, Any]],
+    data_source: str,
+    provider_status: str,
+) -> dict[str, Any]:
+    closes = [_to_float(bar.get("close")) for bar in bars]
+    valid_closes = [close for close in closes if close is not None]
+    last_bar_time = _format_utc(_latest_bar_timestamp(bars)) if _latest_bar_timestamp(bars) else ""
+    is_stale, stale_reason = _evaluate_timeframe_staleness(timeframe, bars, data_source, provider_status, last_bar_time)
+    price = valid_closes[-1] if valid_closes else None
+    ema9 = calculate_ema(valid_closes, 9)
+    ema21 = calculate_ema(valid_closes, 21)
+    ema50 = calculate_ema(valid_closes, 50)
+    stack_status = classify_ema_stack(ema9, ema21, ema50)
+    trend = classify_timeframe_trend(price, ema9, ema21, ema50)
+
+    return {
+        "timeframe": timeframe,
+        "price": _round_or_none(price),
+        "ema9": _round_or_none(ema9),
+        "ema21": _round_or_none(ema21),
+        "ema50": _round_or_none(ema50),
+        "ema_stack_status": stack_status,
+        "trend": trend,
+        "price_vs_ema9": _level_relationship(price, ema9),
+        "price_vs_ema21": _level_relationship(price, ema21),
+        "price_vs_ema50": _level_relationship(price, ema50),
+        "last_bar_time": last_bar_time,
+        "is_stale": is_stale,
+        "stale_reason": stale_reason,
+    }
+
+
+def classify_ema_stack(ema9: float | None, ema21: float | None, ema50: float | None) -> str:
+    if ema9 is None or ema21 is None or ema50 is None:
+        return "mixed_stack"
+    if ema9 > ema21 > ema50:
+        return "bullish_stack"
+    if ema9 < ema21 < ema50:
+        return "bearish_stack"
+    return "mixed_stack"
+
+
+def classify_timeframe_trend(
+    price: float | None,
+    ema9: float | None,
+    ema21: float | None,
+    ema50: float | None,
+) -> str:
+    stack_status = classify_ema_stack(ema9, ema21, ema50)
+    if price is None or ema9 is None:
+        return "mixed"
+    if stack_status == "bullish_stack":
+        return "strong_bullish" if price > ema9 else "bullish"
+    if stack_status == "bearish_stack":
+        return "strong_bearish" if price < ema9 else "bearish"
+    return "mixed"
 
 
 def _build_market_data(
@@ -472,6 +598,58 @@ def _evaluate_data_gate(market_data: dict[str, Any]) -> tuple[str, str]:
         return DATA_GATE_CLOSED, "required market data missing"
 
     return DATA_GATE_OPEN, ""
+
+
+def _evaluate_timeframe_staleness(
+    timeframe: str,
+    bars: list[dict[str, Any]],
+    data_source: str,
+    provider_status: str,
+    last_bar_time: str,
+) -> tuple[bool, str]:
+    if provider_status == "unavailable" or data_source == "unavailable":
+        return True, "timeframe data unavailable"
+    if len(bars) < MTF_REQUIRED_BARS:
+        return True, "not enough bars for EMA 50"
+    if not last_bar_time:
+        return True, "last bar time unavailable"
+    if data_source == "mock":
+        return False, ""
+    parsed = _parse_timestamp(last_bar_time)
+    if parsed is None:
+        return True, "last bar time unavailable"
+    threshold_seconds = (_timeframe_minutes(timeframe) * 60 * 2) + STALE_MARKET_DATA_SECONDS
+    if (datetime.now(timezone.utc) - parsed).total_seconds() > threshold_seconds:
+        return True, "timeframe data stale"
+    return False, ""
+
+
+def _level_relationship(price: float | None, level: float | None) -> str:
+    if price is None or level is None:
+        return "unavailable"
+    if price > level:
+        return "above"
+    if price < level:
+        return "below"
+    return "equal"
+
+
+def _alignment_summary(dominant_trend: str, bullish_count: int, bearish_count: int, any_stale: bool) -> str:
+    if any_stale:
+        return "Multi-timeframe data is stale or incomplete; use the trend panel for context only."
+    if dominant_trend == "bullish":
+        return f"Multi-timeframe trend is bullish across {bullish_count} of 5 timeframes."
+    if dominant_trend == "bearish":
+        return f"Multi-timeframe trend is bearish across {bearish_count} of 5 timeframes."
+    return "Multi-timeframe trend is mixed; higher and lower timeframes are not aligned."
+
+
+def _multi_timeframe_summary_sentence(multi_timeframe_trend: dict[str, Any]) -> str:
+    if not multi_timeframe_trend:
+        return "Multi-timeframe trend is unavailable."
+    if multi_timeframe_trend.get("data_gate_status") == DATA_GATE_CLOSED:
+        return "Multi-timeframe data is stale; use trend panel for context only."
+    return str(multi_timeframe_trend.get("alignment_summary") or "Multi-timeframe trend is unavailable.")
 
 
 def _price_relationship(level_name: str, price: float | None, level: float | None) -> str:
@@ -606,6 +784,13 @@ def _parse_timeframe(timeframe: str) -> tuple[str, int]:
     if normalized in {"daily", "1d", "d"}:
         return "daily", 1
     raise ValueError(f"Unsupported timeframe: {timeframe}")
+
+
+def _timeframe_minutes(timeframe: str) -> int:
+    frequency_type, frequency = _parse_timeframe(timeframe)
+    if frequency_type != "minute":
+        return 1440
+    return frequency
 
 
 def _to_float(value: Any) -> float | None:

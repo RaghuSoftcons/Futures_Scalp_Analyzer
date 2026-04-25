@@ -62,6 +62,8 @@ The Phase 3 payload also includes freshness fields:
 - `data_gate_status`: `open` or `closed`
 - `data_gate_reason`
 
+The Phase 3A payload adds `multi_timeframe_trend` with EMA 9, EMA 21, EMA 50, stack status, trend, last bar, and stale status for `30m`, `15m`, `5m`, `3m`, and `1m`.
+
 If `is_stale` is true, the dashboard shows:
 
 ```text
@@ -84,6 +86,7 @@ The dashboard shows a compact Quick Status Bar below the manual execution and mo
 - Recommendation
 - Risk Status, displayed as `RISK GATE OPEN` or `RISK GATE CLOSED`
 - Data Gate, displayed as `DATA GATE OPEN` or `DATA GATE CLOSED`
+- MTF dominant trend, displayed as `MTF: Bullish`, `MTF: Bearish`, `MTF: Mixed`, or `MTF: Stale`
 - Trend
 - Price vs VWAP
 - Price vs EMA 9
@@ -92,6 +95,16 @@ The dashboard shows a compact Quick Status Bar below the manual execution and mo
 The Quick Status Bar uses the backend decision and technical readout. It does not use news, Truth Social, social context, sentiment, or bias.
 
 Risk Gate and Data Gate are separate. Risk Gate reflects account/risk rules. Data Gate reflects whether market data is usable for recommendation logic. If data is stale but account risk is acceptable, the dashboard should show `RISK GATE OPEN`, `DATA GATE CLOSED`, and `NO TRADE`.
+
+## Multi-Timeframe Trend
+
+The Multi-Timeframe Trend panel displays one row per timeframe:
+
+```text
+Timeframe | Trend | EMA Stack | Price vs EMA 9 | Price vs EMA 21 | Price vs EMA 50 | Last Bar
+```
+
+This panel is context-only in Phase 3A. It does not change the main trade decision rules, and it does not use news, Truth Social, social context, sentiment, or bias.
 
 ## Manual Execution Rule
 
@@ -127,8 +140,10 @@ The dashboard does not add sentiment scoring, bias scoring, or any context-based
 10. Confirm mock data shows the mock-data warning when applicable.
 11. Confirm stale data shows the stale-data warning when applicable.
 12. Confirm the Quick Status Bar is visible without scrolling and summarizes recommendation, risk, data gate, trend, and price relationships.
-13. Confirm there is no permanent bottom Status panel during normal operation.
-14. Confirm news/social context appears only in the display-only panel.
-15. Confirm no order-entry controls or broker action buttons are present.
-16. Confirm the dashboard is readable at 100% browser zoom without needing to zoom in.
-17. Confirm larger fonts do not create horizontal scrolling on a normal desktop-width browser window.
+13. Confirm Quick Status includes one compact `MTF:` badge.
+14. Confirm the Multi-Timeframe Trend panel shows `30m`, `15m`, `5m`, `3m`, and `1m`.
+15. Confirm there is no permanent bottom Status panel during normal operation.
+16. Confirm news/social context appears only in the display-only panel.
+17. Confirm no order-entry controls or broker action buttons are present.
+18. Confirm the dashboard is readable at 100% browser zoom without needing to zoom in.
+19. Confirm larger fonts do not create horizontal scrolling on a normal desktop-width browser window.

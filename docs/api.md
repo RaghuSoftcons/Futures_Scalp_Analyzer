@@ -32,9 +32,13 @@ Returns the Apex structured market data, display-only context, risk settings, an
 - `data_gate_status`
 - `data_gate_reason`
 
+Phase 3A also adds `multi_timeframe_trend` with `30m`, `15m`, `5m`, `3m`, and `1m` timeframe rows. Each row includes EMA 9, EMA 21, EMA 50, stack status, trend, price-vs-EMA relationships, last bar time, and stale status.
+
 ### `GET /apex/decision/{symbol}`
 
 Returns the Apex payload plus the technical-only decision envelope and reusable `technical_readout`. Stale, unavailable, malformed, or incomplete market data returns `NO TRADE` with a clear `no_trade_reason`.
+
+The decision endpoint preserves the same top-level envelope and includes `multi_timeframe_trend` inside `payload`.
 
 The decision envelope keeps account risk and data quality separate:
 
