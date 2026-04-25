@@ -16,6 +16,24 @@ uvicorn backend.app:app --reload
 
 ## Endpoints
 
+### `GET /apex/dashboard`
+
+Serves the Apex Scalp Engine Phase 2 dashboard. The page consumes `/apex/payload/{symbol}` and `/apex/decision/{symbol}` and does not calculate indicators or decisions in the browser.
+
+### `GET /apex/payload/{symbol}`
+
+Returns the Apex structured market data, display-only context, risk settings, and risk state payload. The Phase 3 payload preserves the original sections and adds freshness metadata inside `market_data`:
+
+- `data_mode`: `near_real_time`, `mock`, or `unavailable`
+- `provider_status`: `connected`, `degraded`, `fallback`, or `unavailable`
+- `last_update_time`
+- `is_stale`
+- `stale_reason`
+
+### `GET /apex/decision/{symbol}`
+
+Returns the Apex payload plus the technical-only decision envelope and reusable `technical_readout`. Stale or unavailable market data returns `NO TRADE` with a clear `no_trade_reason`.
+
 ### `POST /futures/analyze`
 
 Evaluates a futures scalp idea in `idea_eval` mode.

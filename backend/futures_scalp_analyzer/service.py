@@ -6,6 +6,14 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
+from .apex import (
+    EXECUTION_MODE,
+    NEWS_DECISION_POLICY,
+    ORDER_ROUTING_ENABLED,
+    PLATFORM_NAME,
+    build_accountability_status,
+    build_manual_execution_notice,
+)
 from .economic_calendar import fetch_economic_events
 from .market_analysis import compute_market_context
 from .models import FuturesScalpAnalysisResponse, FuturesScalpIdeaRequest
@@ -435,7 +443,7 @@ def _build_gpt_fields(
             f"News note: {news_bias_note or 'none'}\n"
             f"Recent Truth Social posts: {', '.join(trump_posts_recent) if trump_posts_recent else 'none'}\n"
             f"Top headlines: {', '.join(top_headlines) if top_headlines else 'none'}\n\n"
-            "Use news/geopolitical context to adjust conviction, especially if it conflicts with technicals."
+            "Display-only context. Do not use news/geopolitical context to make, upgrade, or downgrade trade decisions."
         ),
         "economic_calendar": (
             "## Economic Calendar\n"
@@ -479,6 +487,22 @@ def _select_preferred_response(
     )
 
 
+def _apex_response_fields(request: FuturesScalpIdeaRequest) -> dict[str, Any]:
+    return {
+        "platform": PLATFORM_NAME,
+        "execution_mode": EXECUTION_MODE,
+        "order_routing_enabled": ORDER_ROUTING_ENABLED,
+        "manual_execution_notice": build_manual_execution_notice(),
+        "news_decision_policy": NEWS_DECISION_POLICY,
+        "trader_id": request.trader_id,
+        "trade_plan_id": request.trade_plan_id,
+        "accountability_status": build_accountability_status(
+            request.trader_id,
+            request.trade_plan_id,
+        ),
+    }
+
+
 async def _analyze_request_for_side(
     request: FuturesScalpIdeaRequest,
     price_feed: PriceFeed,
@@ -493,6 +517,7 @@ async def _analyze_request_for_side(
     if not session_guard["allowed"]:
         entry_price, stop_price, target_price = _resolve_trade_levels(request, spec, risk_template, None)
         return FuturesScalpAnalysisResponse(
+            **_apex_response_fields(request),
             symbol=request.symbol,
             side=request.side,
             direction=request.side.upper(),
@@ -603,6 +628,7 @@ async def _analyze_request_for_side(
             final_recommendation="pass",
         )
         return FuturesScalpAnalysisResponse(
+            **_apex_response_fields(request),
             symbol=request.symbol,
             side=request.side,
             direction=gpt_fields["direction"],
@@ -833,6 +859,7 @@ async def _analyze_request_for_side(
         watch_out_for = f"{watch_out_for} {warning_message}".strip()
 
     return FuturesScalpAnalysisResponse(
+        **_apex_response_fields(request),
         symbol=request.symbol,
         side=request.side,
         direction=gpt_fields["direction"],

@@ -45,6 +45,8 @@ class NewsHeadlineItem(NewsTimestampedItem):
 class FuturesScalpIdeaRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
+    trader_id: str | None = None
+    trade_plan_id: str | None = None
     symbol: SupportedSymbol
     side: TradeSide | None = Field(default=None, validation_alias=AliasChoices("side", "direction"))
     entry_price: float | None = Field(default=None, gt=0)
@@ -67,6 +69,14 @@ class FuturesScalpIdeaRequest(BaseModel):
 class FuturesScalpAnalysisResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
+    platform: str = "Apex Scalp Engine"
+    execution_mode: Literal["manual_only"] = "manual_only"
+    order_routing_enabled: bool = False
+    manual_execution_notice: str = "Decision-support only. No live orders are placed or routed; traders must execute manually in their chosen platform."
+    news_decision_policy: Literal["display_only"] = "display_only"
+    trader_id: str | None = None
+    trade_plan_id: str | None = None
+    accountability_status: Literal["identified", "anonymous"] = "anonymous"
     symbol: SupportedSymbol
     side: TradeSide
     direction: str

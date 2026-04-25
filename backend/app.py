@@ -2,10 +2,21 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Depends, FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from futures_scalp_analyzer.apex import build_platform_status
+from futures_scalp_analyzer.apex_dashboard import render_apex_dashboard
+from futures_scalp_analyzer.apex_pipeline import (
+    MarketDataProvider,
+    MockMarketDataProvider,
+    SchwabMarketDataProvider,
+    build_technical_readout,
+    build_payload,
+    generate_trade_decision,
+)
 from futures_scalp_analyzer.models import FuturesScalpAnalysisResponse, FuturesScalpIdeaRequest
 from futures_scalp_analyzer.price_feed import (
     FALLBACK_ACTIVE_CONTRACTS,
@@ -21,13 +32,119 @@ from futures_scalp_analyzer.service import analyze_request
 def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
     app = FastAPI(title="Futures Scalp Analyzer", version="0.1.0")
     app.state.price_feed = price_feed or SchwabQuotePriceFeed()
+    app.state.apex_provider = None
 
     def get_price_feed() -> PriceFeed:
         return app.state.price_feed
 
+    def get_apex_provider(feed: PriceFeed) -> MarketDataProvider:
+        configured_provider = getattr(app.state, "apex_provider", None)
+        if configured_provider is not None:
+            return configured_provider
+        if isinstance(feed, SchwabQuotePriceFeed):
+            return SchwabMarketDataProvider(feed)
+        return MockMarketDataProvider()
+
+    def apply_apex_risk_state(
+        payload: dict[str, Any],
+        daily_loss: float,
+        estimated_risk: float,
+        trades_today: int,
+        consecutive_losses: int,
+        locked_out: bool,
+    ) -> dict[str, Any]:
+        payload["risk_state"] = {
+            "daily_loss": round(float(daily_loss), 2),
+            "estimated_risk": round(float(estimated_risk), 2),
+            "trades_today": int(trades_today),
+            "consecutive_losses": int(consecutive_losses),
+            "locked_out": bool(locked_out),
+        }
+        return payload
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/apex/status")
+    async def apex_status() -> dict[str, Any]:
+        return build_platform_status()
+
+    @app.get("/apex/dashboard", response_class=HTMLResponse)
+    async def apex_dashboard() -> HTMLResponse:
+        return HTMLResponse(render_apex_dashboard())
+
+    @app.get("/apex/payload/{symbol}")
+    async def apex_payload(
+        symbol: str,
+        daily_loss: float = 0.0,
+        estimated_risk: float = 0.0,
+        trades_today: int = 0,
+        consecutive_losses: int = 0,
+        locked_out: bool = False,
+        news_title: str | None = None,
+        social_title: str | None = None,
+        feed: PriceFeed = Depends(get_price_feed),
+    ) -> dict[str, Any]:
+        context = {
+            "news": [{"title": news_title, "source": "API", "url": ""}] if news_title else [],
+            "social": [{"title": social_title, "source": "Truth Social", "url": ""}] if social_title else [],
+        }
+        payload = await asyncio.to_thread(
+            build_payload,
+            symbol,
+            get_apex_provider(feed),
+            None,
+            context,
+        )
+        return apply_apex_risk_state(
+            payload,
+            daily_loss=daily_loss,
+            estimated_risk=estimated_risk,
+            trades_today=trades_today,
+            consecutive_losses=consecutive_losses,
+            locked_out=locked_out,
+        )
+
+    @app.get("/apex/decision/{symbol}")
+    async def apex_decision(
+        symbol: str,
+        daily_loss: float = 0.0,
+        estimated_risk: float = 0.0,
+        trades_today: int = 0,
+        consecutive_losses: int = 0,
+        locked_out: bool = False,
+        news_title: str | None = None,
+        social_title: str | None = None,
+        feed: PriceFeed = Depends(get_price_feed),
+    ) -> dict[str, Any]:
+        context = {
+            "news": [{"title": news_title, "source": "API", "url": ""}] if news_title else [],
+            "social": [{"title": social_title, "source": "Truth Social", "url": ""}] if social_title else [],
+        }
+        payload = await asyncio.to_thread(
+            build_payload,
+            symbol,
+            get_apex_provider(feed),
+            None,
+            context,
+        )
+        payload = apply_apex_risk_state(
+            payload,
+            daily_loss=daily_loss,
+            estimated_risk=estimated_risk,
+            trades_today=trades_today,
+            consecutive_losses=consecutive_losses,
+            locked_out=locked_out,
+        )
+        decision = generate_trade_decision(payload)
+        technical_readout = build_technical_readout(payload, decision)
+        return {
+            "payload": payload,
+            "decision": decision,
+            "technical_readout": technical_readout,
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
 
     @app.get("/futures/active-contracts")
     async def active_contracts(
@@ -147,9 +264,9 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
     @app.get("/privacy")
     async def privacy_policy():
         return {
-            "service": "Futures Scalp Analyzer",
-            "description": "This API provides live futures price data and scalp trade analysis for personal use only. No user data is collected or stored.",
-            "data_collected": "None",
+            "service": "Apex Scalp Engine",
+            "description": "This API provides live futures price data and scalp trade analysis for manual trader decision support only. It does not place or route orders.",
+            "data_collected": "Optional trader_id and trade_plan_id may be submitted for accountability context; no persistence is added in this phase.",
             "contact": "For questions, contact the account owner via ChatGPT.",
             "usage": "This service is for personal trading analysis only and does not provide financial advice."
         }
