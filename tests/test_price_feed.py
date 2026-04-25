@@ -103,3 +103,45 @@ def test_symbol_mapping_for_schwab_symbols():
     assert SUPPORTED_SYMBOLS["NQ"].schwab_symbol == "/NQ"
     assert SUPPORTED_SYMBOLS["MNQ"].schwab_symbol == "/MNQ"
     assert SUPPORTED_SYMBOLS["SIL"].schwab_symbol == "/SIL"
+
+
+def test_get_price_history_allows_thirty_minute_bars(monkeypatch):
+    monkeypatch.setenv("SCHWAB_ACCESS_TOKEN", "token")
+
+    def fake_get(url, headers, timeout):
+        if "quotes?symbols=" in url:
+            return MockResponse(200, {root: {"quote": {"futureActiveSymbol": f"/{root.strip('/')}M26"}} for root in price_feed_module.ROOT_SYMBOLS})
+        assert "frequencyType=minute" in url
+        assert "frequency=30" in url
+        assert headers["Authorization"] == "Bearer token"
+        return MockResponse(
+            200,
+            {
+                "candles": [
+                    {
+                        "open": 100.0,
+                        "high": 101.0,
+                        "low": 99.0,
+                        "close": 100.5,
+                        "volume": 10,
+                        "datetime": 1_800_000_000_000,
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(price_feed_module.httpx, "get", fake_get)
+
+    feed = SchwabQuotePriceFeed()
+    bars = feed.get_price_history("NQ", "minute", 30, "day", 1)
+
+    assert bars == [
+        {
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 10.0,
+            "datetime": 1_800_000_000_000,
+        }
+    ]

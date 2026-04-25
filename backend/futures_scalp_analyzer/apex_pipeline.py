@@ -202,9 +202,9 @@ def build_payload(
     quote = selected_provider.get_quote(symbol)
     bars = selected_provider.get_bars(symbol, "1m", 1)
     data_source = selected_provider.data_source
-    provider_status = "connected" if _has_valid_market_data(quote, bars) else "degraded"
+    provider_status = _provider_status_for_market_data(quote, bars)
 
-    if not _has_valid_market_data(quote, bars) and allow_mock_fallback:
+    if not _has_quote(quote) and allow_mock_fallback:
         quote = fallback.get_quote(symbol)
         bars = fallback.get_bars(symbol, "1m", 1)
         if _has_valid_market_data(quote, bars):
@@ -214,7 +214,7 @@ def build_payload(
         else:
             data_source = "unavailable"
             provider_status = "unavailable"
-    elif not _has_valid_market_data(quote, bars):
+    elif not _has_quote(quote):
         data_source = "unavailable"
         provider_status = "unavailable"
 
@@ -563,8 +563,10 @@ def _evaluate_freshness(
     bars: list[dict[str, Any]],
     last_update_time: str,
 ) -> tuple[bool, str]:
-    if data_source == "unavailable" or price is None or len(bars) < 20:
+    if data_source == "unavailable" or price is None:
         return True, "market data unavailable"
+    if len(bars) < 20:
+        return True, "market data bars unavailable"
     if data_source == "mock":
         return False, ""
     parsed = _parse_timestamp(last_update_time)
@@ -774,7 +776,19 @@ def _format_risk_settings(settings: dict[str, float | int]) -> dict[str, float |
 
 
 def _has_valid_market_data(quote: dict[str, Any], bars: list[dict[str, Any]]) -> bool:
-    return _to_float(quote.get("price")) is not None and len(bars) >= 20
+    return _has_quote(quote) and len(bars) >= 20
+
+
+def _has_quote(quote: dict[str, Any]) -> bool:
+    return _to_float(quote.get("price")) is not None
+
+
+def _provider_status_for_market_data(quote: dict[str, Any], bars: list[dict[str, Any]]) -> str:
+    if _has_valid_market_data(quote, bars):
+        return "connected"
+    if _has_quote(quote):
+        return "degraded"
+    return "unavailable"
 
 
 def _parse_timeframe(timeframe: str) -> tuple[str, int]:

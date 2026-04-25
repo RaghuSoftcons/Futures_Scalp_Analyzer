@@ -43,6 +43,21 @@ class FreshSchwabProvider(MarketDataProvider):
         return _bars_from_closes([120.0 + idx for idx in range(30)], timestamp=1_800_000_000_000)
 
 
+class QuoteOnlySchwabProvider(MarketDataProvider):
+    data_source = "schwab"
+
+    def get_quote(self, symbol: str) -> dict:
+        return {
+            "symbol": symbol,
+            "price": 27440.25,
+            "timestamp": CURRENT_TIMESTAMP,
+            "data_source": self.data_source,
+        }
+
+    def get_bars(self, symbol: str, timeframe: str, lookback: int) -> list[dict]:
+        return []
+
+
 class StaleSchwabProvider(MarketDataProvider):
     data_source = "schwab"
 
@@ -163,6 +178,27 @@ def test_mock_provider_fallback_when_primary_incomplete():
     assert payload["market_data"]["data_gate_status"] == "closed"
     assert payload["market_data"]["data_gate_reason"] == "market data unavailable"
     assert payload["market_data"]["price"] == 108.0
+
+
+def test_schwab_quote_is_preserved_when_history_bars_are_unavailable():
+    fallback = MockMarketDataProvider(
+        quote={"symbol": "NQ", "price": 108.0},
+        bars=_bars_from_closes([100.0 + idx for idx in range(30)]),
+    )
+
+    payload = build_payload("NQ", provider=QuoteOnlySchwabProvider(), fallback_provider=fallback)
+    decision = generate_trade_decision(payload)
+
+    assert payload["market_data"]["data_source"] == "schwab"
+    assert payload["market_data"]["data_mode"] == "near_real_time"
+    assert payload["market_data"]["provider_status"] == "degraded"
+    assert payload["market_data"]["price"] == 27440.25
+    assert payload["market_data"]["is_stale"] is True
+    assert payload["market_data"]["stale_reason"] == "market data bars unavailable"
+    assert payload["market_data"]["data_gate_status"] == "closed"
+    assert decision["recommendation"] == "NO TRADE"
+    assert decision["risk_status"] == "allowed"
+    assert decision["no_trade_reason"] == "market data bars unavailable"
 
 
 def test_build_payload_returns_valid_structured_json():

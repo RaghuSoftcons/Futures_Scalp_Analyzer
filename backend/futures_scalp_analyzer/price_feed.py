@@ -234,7 +234,7 @@ class SchwabQuotePriceFeed(PriceFeed):
             return []
 
         allowed_frequency_type = {"minute", "daily"}
-        allowed_frequency = {1, 3, 5, 15}
+        allowed_frequency = {1, 3, 5, 15, 30}
         allowed_period_type = {"day"}
         allowed_period = {1, 2, 5}
         if (
