@@ -59,6 +59,8 @@ The Phase 3 payload also includes freshness fields:
 - `last_update_time`
 - `is_stale`
 - `stale_reason`
+- `data_gate_status`: `open` or `closed`
+- `data_gate_reason`
 
 If `is_stale` is true, the dashboard shows:
 
@@ -81,12 +83,15 @@ The dashboard shows a compact Quick Status Bar below the manual execution and mo
 
 - Recommendation
 - Risk Status, displayed as `RISK GATE OPEN` or `RISK GATE CLOSED`
+- Data Gate, displayed as `DATA GATE OPEN` or `DATA GATE CLOSED`
 - Trend
 - Price vs VWAP
 - Price vs EMA 9
 - Price vs EMA 20
 
 The Quick Status Bar uses the backend decision and technical readout. It does not use news, Truth Social, social context, sentiment, or bias.
+
+Risk Gate and Data Gate are separate. Risk Gate reflects account/risk rules. Data Gate reflects whether market data is usable for recommendation logic. If data is stale but account risk is acceptable, the dashboard should show `RISK GATE OPEN`, `DATA GATE CLOSED`, and `NO TRADE`.
 
 ## Manual Execution Rule
 
@@ -118,11 +123,12 @@ The dashboard does not add sentiment scoring, bias scoring, or any context-based
 6. Confirm field labels are user-friendly, such as `Session High`, `EMA 9`, `Risk Status`, and `Max Daily Loss`.
 7. Confirm dollar values show two decimals, count values show whole numbers, and confidence shows as a percent.
 8. Confirm `NO TRADE`, `LONG`, `SHORT`, `RISK GATE OPEN`, and `RISK GATE CLOSED` states are visually distinct when returned by the API.
-9. Confirm mock data shows the mock-data warning when applicable.
-10. Confirm stale data shows the stale-data warning when applicable.
-11. Confirm the Quick Status Bar is visible without scrolling and summarizes recommendation, risk, trend, and price relationships.
-12. Confirm there is no permanent bottom Status panel during normal operation.
-13. Confirm news/social context appears only in the display-only panel.
-14. Confirm no order-entry controls or broker action buttons are present.
-15. Confirm the dashboard is readable at 100% browser zoom without needing to zoom in.
-16. Confirm larger fonts do not create horizontal scrolling on a normal desktop-width browser window.
+9. Confirm `DATA GATE OPEN` and `DATA GATE CLOSED` states are visually distinct when returned by the API.
+10. Confirm mock data shows the mock-data warning when applicable.
+11. Confirm stale data shows the stale-data warning when applicable.
+12. Confirm the Quick Status Bar is visible without scrolling and summarizes recommendation, risk, data gate, trend, and price relationships.
+13. Confirm there is no permanent bottom Status panel during normal operation.
+14. Confirm news/social context appears only in the display-only panel.
+15. Confirm no order-entry controls or broker action buttons are present.
+16. Confirm the dashboard is readable at 100% browser zoom without needing to zoom in.
+17. Confirm larger fonts do not create horizontal scrolling on a normal desktop-width browser window.

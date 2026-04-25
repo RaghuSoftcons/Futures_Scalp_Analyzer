@@ -12,6 +12,9 @@ from .price_feed import SchwabQuotePriceFeed
 MANUAL_EXECUTION_NOTE = "Manual execution only. No broker order has been placed."
 DISPLAY_CONTEXT_RULE = "Display only. Not used in trade decisions."
 STALE_MARKET_DATA_SECONDS = 120
+DATA_GATE_OPEN = "open"
+DATA_GATE_CLOSED = "closed"
+REQUIRED_MARKET_DATA_FIELDS = ("price", "vwap", "ema9", "ema20", "rsi", "trend")
 
 DEFAULT_RISK_SETTINGS: dict[str, float | int] = {
     "max_daily_loss": 2000.00,
@@ -228,26 +231,31 @@ def generate_trade_decision(payload: dict[str, Any]) -> dict[str, Any]:
         "social": list(payload.get("context", {}).get("social", [])),
         "context_rule": DISPLAY_CONTEXT_RULE,
     }
+    market_data = payload.get("market_data", {})
+    data_gate_status, data_gate_reason = _evaluate_data_gate(market_data)
+
     if risk_status == "blocked":
         return {
             "recommendation": "NO TRADE",
             "reason": "technical only",
             "confidence": 0,
             "risk_status": "blocked",
+            "data_gate_status": data_gate_status,
+            "data_gate_reason": data_gate_reason,
             "no_trade_reason": risk_reason,
             "manual_execution_note": MANUAL_EXECUTION_NOTE,
             "display_context": display_context,
         }
 
-    market_data = payload.get("market_data", {})
-    freshness_reason = _market_data_block_reason(market_data)
-    if freshness_reason:
+    if data_gate_status == DATA_GATE_CLOSED:
         return {
             "recommendation": "NO TRADE",
             "reason": "technical only",
             "confidence": 0,
             "risk_status": "allowed",
-            "no_trade_reason": freshness_reason,
+            "data_gate_status": DATA_GATE_CLOSED,
+            "data_gate_reason": data_gate_reason,
+            "no_trade_reason": data_gate_reason,
             "manual_execution_note": MANUAL_EXECUTION_NOTE,
             "display_context": display_context,
         }
@@ -297,6 +305,8 @@ def generate_trade_decision(payload: dict[str, Any]) -> dict[str, Any]:
         "reason": "technical only",
         "confidence": confidence,
         "risk_status": "allowed",
+        "data_gate_status": DATA_GATE_OPEN,
+        "data_gate_reason": "",
         "no_trade_reason": no_trade_reason,
         "manual_execution_note": MANUAL_EXECUTION_NOTE,
         "display_context": display_context,
@@ -325,6 +335,20 @@ def build_technical_readout(payload: dict[str, Any], decision: dict[str, Any]) -
         f"{price_vs_vwap} {price_vs_ema9} {price_vs_ema20} "
         f"{ma_alignment} {rsi_comment} {trend_comment} {decision_comment}"
     )
+    data_gate_status = str(decision.get("data_gate_status") or market_data.get("data_gate_status") or "").lower()
+    if data_gate_status == DATA_GATE_CLOSED:
+        safety_reason = str(decision.get("data_gate_reason") or market_data.get("data_gate_reason") or "")
+        if "stale" in safety_reason.lower():
+            safety_note = (
+                "Market data is stale. Technical readout is shown for context only. "
+                "Trade recommendations are blocked until data freshness is restored."
+            )
+        else:
+            safety_note = (
+                "Market data is not usable. Technical readout is shown for context only. "
+                "Trade recommendations are blocked until data quality is restored."
+            )
+        summary = f"{safety_note} {summary}"
 
     return {
         "summary": summary,
@@ -356,8 +380,7 @@ def _build_market_data(
     last_update_time = _resolve_last_update_time(quote, bars)
     data_mode = _data_mode_for_source(data_source)
     is_stale, stale_reason = _evaluate_freshness(data_source, price, bars, last_update_time)
-
-    return {
+    rounded_market_data = {
         "symbol": symbol.upper(),
         "price": _round_or_none(price),
         "session_high": _round_or_none(max(float(bar["high"]) for bar in bars) if bars else None),
@@ -375,6 +398,11 @@ def _build_market_data(
         "is_stale": is_stale,
         "stale_reason": stale_reason,
     }
+    data_gate_status, data_gate_reason = _evaluate_data_gate(rounded_market_data)
+    rounded_market_data["data_gate_status"] = data_gate_status
+    rounded_market_data["data_gate_reason"] = data_gate_reason
+
+    return rounded_market_data
 
 
 def _data_mode_for_source(data_source: str) -> str:
@@ -422,12 +450,28 @@ def _evaluate_freshness(
     return False, ""
 
 
-def _market_data_block_reason(market_data: dict[str, Any]) -> str:
-    if market_data.get("data_mode") == "unavailable" or market_data.get("data_source") == "unavailable":
-        return str(market_data.get("stale_reason") or "market data unavailable")
+def _evaluate_data_gate(market_data: dict[str, Any]) -> tuple[str, str]:
+    if not isinstance(market_data, dict) or not market_data:
+        return DATA_GATE_CLOSED, "market data unavailable"
+
+    provider_status = str(market_data.get("provider_status") or "").lower()
+    data_source = str(market_data.get("data_source") or "").lower()
+    data_mode = str(market_data.get("data_mode") or "").lower()
+
+    if provider_status == "unavailable":
+        return DATA_GATE_CLOSED, "market data unavailable"
+    if data_source in {"", "unavailable"}:
+        return DATA_GATE_CLOSED, "market data unavailable"
+    if data_mode not in {"live", "near_real_time"}:
+        return DATA_GATE_CLOSED, "market data unavailable"
     if bool(market_data.get("is_stale", False)):
-        return str(market_data.get("stale_reason") or "market data stale")
-    return ""
+        return DATA_GATE_CLOSED, str(market_data.get("stale_reason") or "market data stale")
+
+    missing = [field for field in REQUIRED_MARKET_DATA_FIELDS if market_data.get(field) in (None, "", "unavailable")]
+    if missing:
+        return DATA_GATE_CLOSED, "required market data missing"
+
+    return DATA_GATE_OPEN, ""
 
 
 def _price_relationship(level_name: str, price: float | None, level: float | None) -> str:

@@ -74,13 +74,15 @@ def _payload_for_decision(**market_overrides):
         "ema20": 104.0,
         "rsi": 60.0,
         "trend": "uptrend",
-        "data_source": "mock",
-        "data_mode": "mock",
-        "provider_status": "fallback",
+        "data_source": "schwab",
+        "data_mode": "near_real_time",
+        "provider_status": "connected",
         "timestamp": CURRENT_TIMESTAMP,
         "last_update_time": CURRENT_TIMESTAMP,
         "is_stale": False,
         "stale_reason": "",
+        "data_gate_status": "open",
+        "data_gate_reason": "",
     }
     market_data.update(market_overrides)
     return {
@@ -141,6 +143,8 @@ def test_mock_provider_fallback_when_primary_incomplete():
     assert payload["market_data"]["data_mode"] == "mock"
     assert payload["market_data"]["provider_status"] == "fallback"
     assert payload["market_data"]["is_stale"] is False
+    assert payload["market_data"]["data_gate_status"] == "closed"
+    assert payload["market_data"]["data_gate_reason"] == "market data unavailable"
     assert payload["market_data"]["price"] == 108.0
 
 
@@ -172,6 +176,8 @@ def test_build_payload_returns_valid_structured_json():
             "last_update_time",
             "is_stale",
             "stale_reason",
+            "data_gate_status",
+            "data_gate_reason",
         }
     assert payload["context"]["context_rule"] == "Display only. Not used in trade decisions."
     assert payload["context"]["social"][0]["source"] == "Truth Social"
@@ -184,6 +190,7 @@ def test_schwab_success_path_marks_near_real_time_when_fresh():
     assert payload["market_data"]["data_mode"] == "near_real_time"
     assert payload["market_data"]["provider_status"] == "connected"
     assert payload["market_data"]["is_stale"] is False
+    assert payload["market_data"]["data_gate_status"] == "open"
 
 
 def test_provider_unavailable_without_mock_fallback_marks_unavailable():
@@ -194,6 +201,7 @@ def test_provider_unavailable_without_mock_fallback_marks_unavailable():
     assert payload["market_data"]["provider_status"] == "unavailable"
     assert payload["market_data"]["is_stale"] is True
     assert payload["market_data"]["stale_reason"] == "market data unavailable"
+    assert payload["market_data"]["data_gate_status"] == "closed"
 
 
 def test_unavailable_market_data_returns_no_trade():
@@ -203,6 +211,8 @@ def test_unavailable_market_data_returns_no_trade():
 
     assert decision["recommendation"] == "NO TRADE"
     assert decision["no_trade_reason"] == "market data unavailable"
+    assert decision["risk_status"] == "allowed"
+    assert decision["data_gate_status"] == "closed"
 
 
 def test_stale_market_data_returns_no_trade():
@@ -213,8 +223,22 @@ def test_stale_market_data_returns_no_trade():
     assert payload["market_data"]["data_source"] == "schwab"
     assert payload["market_data"]["is_stale"] is True
     assert payload["market_data"]["stale_reason"] == "market data stale"
+    assert payload["market_data"]["data_gate_status"] == "closed"
     assert decision["recommendation"] == "NO TRADE"
     assert decision["no_trade_reason"] == "market data stale"
+    assert decision["risk_status"] == "allowed"
+    assert decision["data_gate_status"] == "closed"
+
+
+def test_required_market_data_missing_closes_data_gate():
+    payload = _payload_for_decision(ema9=None)
+
+    decision = generate_trade_decision(payload)
+
+    assert decision["recommendation"] == "NO TRADE"
+    assert decision["risk_status"] == "allowed"
+    assert decision["data_gate_status"] == "closed"
+    assert decision["no_trade_reason"] == "required market data missing"
 
 
 def test_generate_trade_decision_returns_valid_long_json():
@@ -225,6 +249,8 @@ def test_generate_trade_decision_returns_valid_long_json():
         "reason": "technical only",
         "confidence": 70,
         "risk_status": "allowed",
+        "data_gate_status": "open",
+        "data_gate_reason": "",
         "no_trade_reason": "",
         "manual_execution_note": MANUAL_EXECUTION_NOTE,
         "display_context": {
@@ -292,6 +318,7 @@ def test_risk_blocked_behavior():
 
     assert decision["recommendation"] == "NO TRADE"
     assert decision["risk_status"] == "blocked"
+    assert decision["data_gate_status"] == "open"
     assert decision["no_trade_reason"] == "risk rule violated"
     assert decision["manual_execution_note"] == MANUAL_EXECUTION_NOTE
 
@@ -366,6 +393,18 @@ def test_technical_readout_risk_blocked_comment():
     readout = build_technical_readout(payload, decision)
 
     assert readout["decision_comment"] == "Risk rules are blocking new recommendations."
+
+
+def test_technical_readout_data_gate_closed_stale_safety_note():
+    payload = _payload_for_decision(is_stale=True, stale_reason="market data stale", data_gate_status="closed", data_gate_reason="market data stale")
+    decision = generate_trade_decision(payload)
+
+    readout = build_technical_readout(payload, decision)
+
+    assert readout["summary"].startswith(
+        "Market data is stale. Technical readout is shown for context only. "
+        "Trade recommendations are blocked until data freshness is restored."
+    )
 
 
 def test_technical_readout_ignores_news_and_social_context():

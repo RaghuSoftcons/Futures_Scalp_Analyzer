@@ -111,12 +111,21 @@ Required freshness fields:
 - `last_update_time`
 - `is_stale`
 - `stale_reason`
+- `data_gate_status`: `open` or `closed`
+- `data_gate_reason`
 
 The current Schwab integration is HTTP quote/history based, so Phase 3 uses safe polling rather than WebSocket streaming. Stale or unavailable data must return `NO TRADE` and must not produce `LONG` or `SHORT`.
+
+Data Gate rules:
+
+- `DATA GATE OPEN` only when provider status is connected, data source is valid, data mode is live or near-real-time, data is not stale, and required market data fields are present.
+- `DATA GATE CLOSED` when data is stale, unavailable, malformed, incomplete, or outside the freshness threshold.
+- Risk Gate remains separate and reflects account/risk rules only.
 
 Dashboard rules:
 
 - Show data mode, provider status, and last update time near the header.
+- Show Data Gate separately from Risk Gate.
 - Show `Data Stale - Verify Before Trading` when `is_stale` is true.
 - Continue showing `Mock Data - Not Live Market Data` when mock data is used.
 - Do not calculate trade decisions in the browser.

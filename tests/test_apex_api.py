@@ -49,6 +49,7 @@ def test_apex_payload_endpoint_returns_valid_json():
     assert body["market_data"]["data_source"] == "mock"
     assert body["market_data"]["data_mode"] == "mock"
     assert body["market_data"]["provider_status"] == "connected"
+    assert body["market_data"]["data_gate_status"] == "closed"
     assert "last_update_time" in body["market_data"]
     assert body["market_data"]["is_stale"] is False
 
@@ -61,6 +62,7 @@ def test_apex_payload_endpoint_includes_required_sections():
     assert "risk_settings" in body
     assert "data_mode" in body["market_data"]
     assert "provider_status" in body["market_data"]
+    assert "data_gate_status" in body["market_data"]
     assert "last_update_time" in body["market_data"]
     assert body["context"]["context_rule"] == "Display only. Not used in trade decisions."
 
@@ -76,6 +78,7 @@ def test_apex_decision_endpoint_returns_payload_and_decision():
     assert "risk_settings" in body["payload"]
     assert body["decision"]["recommendation"] in {"LONG", "SHORT", "NO TRADE"}
     assert body["decision"]["manual_execution_note"] == MANUAL_EXECUTION_NOTE
+    assert body["decision"]["data_gate_status"] in {"open", "closed"}
     assert "summary" in body["technical_readout"]
     assert "price_relationships" in body["technical_readout"]
 
@@ -109,4 +112,6 @@ def test_apex_decision_endpoint_stale_data_returns_no_trade():
     assert body["payload"]["market_data"]["is_stale"] is True
     assert body["payload"]["market_data"]["stale_reason"] == "market data stale"
     assert body["decision"]["recommendation"] == "NO TRADE"
+    assert body["decision"]["risk_status"] == "allowed"
+    assert body["decision"]["data_gate_status"] == "closed"
     assert body["decision"]["no_trade_reason"] == "market data stale"

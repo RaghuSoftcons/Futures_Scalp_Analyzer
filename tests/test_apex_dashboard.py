@@ -7,6 +7,7 @@ from futures_scalp_analyzer.apex_dashboard import (
     DISPLAY_LABELS,
     DISPLAY_CONTEXT_RULE,
     MANUAL_EXECUTION_NOTE,
+    data_gate_display_state,
     decision_display_state,
     format_count,
     format_money,
@@ -49,6 +50,11 @@ def test_risk_blocked_display_mapping():
     assert risk_display_state("allowed") == {"label": "RISK GATE OPEN", "class_name": "risk-allowed"}
 
 
+def test_data_gate_display_mapping():
+    assert data_gate_display_state("open") == {"label": "DATA GATE OPEN", "class_name": "data-allowed"}
+    assert data_gate_display_state("closed") == {"label": "DATA GATE CLOSED", "class_name": "data-blocked"}
+
+
 def test_validate_dashboard_response_flags_missing_fields():
     errors = validate_dashboard_response({"market_data": {}, "risk_settings": {}}, {"decision": {}})
     assert errors == ["missing context"]
@@ -78,6 +84,9 @@ def test_dashboard_route_contains_required_static_contract():
     assert "stale-warning" in body
     assert "data-mode" in body
     assert "provider-status" in body
+    assert "DATA GATE OPEN" in body
+    assert "DATA GATE CLOSED" in body
+    assert "data-gate-badge" in body
     assert "Last Update:" in body
     assert "Price vs VWAP" in body
     assert "Decision Comment" in body
@@ -96,5 +105,8 @@ def test_dashboard_route_contains_required_static_contract():
     assert "/apex/decision/" in body
     assert "RISK GATE OPEN" in body
     assert "RISK GATE CLOSED" in body
+    assert "DATA GATE OPEN" in body
+    assert "DATA GATE CLOSED" in body
+    assert '"data_gate_status") return String(value).toLowerCase() === "open" ? "DATA GATE OPEN" : "DATA GATE CLOSED"' in body
     assert '"risk_status") return String(value).toLowerCase() === "blocked" ? "RISK GATE CLOSED" : "RISK GATE OPEN"' in body
     assert "Auto 8s" in body

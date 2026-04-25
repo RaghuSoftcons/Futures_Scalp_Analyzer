@@ -29,10 +29,20 @@ Returns the Apex structured market data, display-only context, risk settings, an
 - `last_update_time`
 - `is_stale`
 - `stale_reason`
+- `data_gate_status`
+- `data_gate_reason`
 
 ### `GET /apex/decision/{symbol}`
 
-Returns the Apex payload plus the technical-only decision envelope and reusable `technical_readout`. Stale or unavailable market data returns `NO TRADE` with a clear `no_trade_reason`.
+Returns the Apex payload plus the technical-only decision envelope and reusable `technical_readout`. Stale, unavailable, malformed, or incomplete market data returns `NO TRADE` with a clear `no_trade_reason`.
+
+The decision envelope keeps account risk and data quality separate:
+
+- `risk_status`: `allowed` or `blocked`
+- `data_gate_status`: `open` or `closed`
+- `data_gate_reason`
+
+Example: stale Schwab data with account risk still acceptable returns `risk_status = allowed`, `data_gate_status = closed`, and `recommendation = NO TRADE`.
 
 ### `POST /futures/analyze`
 

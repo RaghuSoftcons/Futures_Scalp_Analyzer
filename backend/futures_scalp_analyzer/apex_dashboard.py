@@ -27,6 +27,7 @@ DISPLAY_LABELS = {
     "last_update_time": "Last Update",
     "is_stale": "Stale",
     "stale_reason": "Stale Reason",
+    "data_gate_status": "Data Gate",
     "reason": "Reason",
     "confidence": "Confidence",
     "risk_status": "Risk Status",
@@ -69,6 +70,12 @@ def risk_display_state(risk_status: str | None) -> dict[str, str]:
     if (risk_status or "").lower() == "blocked":
         return {"label": "RISK GATE CLOSED", "class_name": "risk-blocked"}
     return {"label": "RISK GATE OPEN", "class_name": "risk-allowed"}
+
+
+def data_gate_display_state(data_gate_status: str | None) -> dict[str, str]:
+    if (data_gate_status or "").lower() == "open":
+        return {"label": "DATA GATE OPEN", "class_name": "data-allowed"}
+    return {"label": "DATA GATE CLOSED", "class_name": "data-blocked"}
 
 
 def validate_dashboard_response(payload: dict[str, Any], decision_response: dict[str, Any]) -> list[str]:
@@ -252,6 +259,8 @@ def render_apex_dashboard() -> str:
     .state-none {{ background: rgba(209, 154, 56, .14); color: #ffd18b; border: 1px solid rgba(255, 209, 139, .45); }}
     .risk-blocked {{ background: rgba(255, 92, 92, .16); color: #ffb0b0; border: 1px solid rgba(255, 176, 176, .45); }}
     .risk-allowed {{ background: rgba(88, 196, 141, .14); color: #9ee6bd; border: 1px solid rgba(158, 230, 189, .45); }}
+    .data-blocked {{ background: rgba(255, 92, 92, .16); color: #ffb0b0; border: 1px solid rgba(255, 176, 176, .45); }}
+    .data-allowed {{ background: rgba(109, 183, 255, .14); color: #abd8ff; border: 1px solid rgba(171, 216, 255, .45); }}
     .trend-uptrend {{ color: #5ee0aa; }}
     .trend-downtrend {{ color: #ff9aa5; }}
     .trend-neutral {{ color: #ffd18b; }}
@@ -333,6 +342,7 @@ def render_apex_dashboard() -> str:
         <div class="status-row">
           <span id="recommendation-badge" class="badge state-none">NO TRADE</span>
           <span id="risk-badge" class="badge risk-allowed">RISK GATE OPEN</span>
+          <span id="data-gate-badge" class="badge data-blocked">DATA GATE CLOSED</span>
         </div>
         <div class="metrics" id="decision-data"></div>
       </section>
@@ -404,6 +414,7 @@ def render_apex_dashboard() -> str:
       if (key === "provider_status") return String(value).replaceAll("_", " ").toUpperCase();
       if (key === "is_stale") return value ? "Yes" : "No";
       if (key === "risk_status") return String(value).toLowerCase() === "blocked" ? "RISK GATE CLOSED" : "RISK GATE OPEN";
+      if (key === "data_gate_status") return String(value).toLowerCase() === "open" ? "DATA GATE OPEN" : "DATA GATE CLOSED";
       if (key === "confidence") return Number(value || 0).toLocaleString(undefined, {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }}) + "%";
       if (moneyKeys.has(key)) return fmtMoney(value);
       if (integerKeys.has(key)) return String(Number(value || 0).toFixed(0));
@@ -427,6 +438,10 @@ def render_apex_dashboard() -> str:
 
     function riskClass(status) {{
       return status === "blocked" ? "badge risk-blocked" : "badge risk-allowed";
+    }}
+
+    function dataGateClass(status) {{
+      return status === "open" ? "badge data-allowed" : "badge data-blocked";
     }}
 
     function renderContext(decision) {{
@@ -473,11 +488,14 @@ def render_apex_dashboard() -> str:
       const relationships = readout.price_relationships || [];
       const recommendation = decision.recommendation || "NO TRADE";
       const riskStatus = decision.risk_status || "allowed";
+      const dataGateStatus = decision.data_gate_status || market.data_gate_status || "closed";
       const riskText = riskStatus === "blocked" ? "RISK GATE CLOSED" : "RISK GATE OPEN";
+      const dataGateText = dataGateStatus === "open" ? "DATA GATE OPEN" : "DATA GATE CLOSED";
       const trendText = prettyTrend(market.trend || "neutral").toUpperCase();
       const items = [
         [recommendation, "strong"],
         [riskText, "strong"],
+        [dataGateText, "strong"],
         [trendText, "strong"],
         [relationships[0] || "Price vs VWAP unavailable.", ""],
         [relationships[1] || "Price vs EMA 9 unavailable.", ""],
@@ -527,11 +545,16 @@ def render_apex_dashboard() -> str:
         const riskBadge = document.getElementById("risk-badge");
         riskBadge.className = riskClass(riskStatus);
         riskBadge.textContent = riskStatus === "blocked" ? "RISK GATE CLOSED" : "RISK GATE OPEN";
+        const dataGateStatus = decision.data_gate_status || market.data_gate_status || "closed";
+        const dataGateBadge = document.getElementById("data-gate-badge");
+        dataGateBadge.className = dataGateClass(dataGateStatus);
+        dataGateBadge.textContent = dataGateStatus === "open" ? "DATA GATE OPEN" : "DATA GATE CLOSED";
 
         document.getElementById("decision-data").innerHTML = [
           metric("reason", decision.reason),
           metric("confidence", decision.confidence, {{ className: "primary" }}),
           metric("risk_status", decision.risk_status, {{ className: riskStatus === "blocked" ? "warning" : "" }}),
+          metric("data_gate_status", dataGateStatus, {{ className: dataGateStatus === "open" ? "" : "warning" }}),
           metric("no_trade_reason", decision.no_trade_reason || "none", {{ className: recommendation === "NO TRADE" ? "warning" : "" }}),
           metric("manual_execution_note", decision.manual_execution_note)
         ].join("");
