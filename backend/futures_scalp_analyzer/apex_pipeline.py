@@ -8,6 +8,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .price_feed import SchwabQuotePriceFeed
+from .symbols import get_instrument_metadata
 
 
 MANUAL_EXECUTION_NOTE = "Manual execution only. No broker order has been placed."
@@ -165,10 +166,12 @@ def calculate_vwap(bars: list[dict[str, Any]]) -> float | None:
     cumulative_pv = 0.0
     cumulative_volume = 0.0
     for bar in bars:
-        high = float(bar["high"])
-        low = float(bar["low"])
-        close = float(bar["close"])
-        volume = float(bar.get("volume", 0.0))
+        high = _to_float(bar.get("high"))
+        low = _to_float(bar.get("low"))
+        close = _to_float(bar.get("close"))
+        volume = _to_float(bar.get("volume"))
+        if high is None or low is None or close is None or volume is None:
+            continue
         typical_price = (high + low + close) / 3.0
         cumulative_pv += typical_price * volume
         cumulative_volume += volume
@@ -204,12 +207,14 @@ def build_payload(
 
     quote = selected_provider.get_quote(symbol)
     bars = selected_provider.get_bars(symbol, "1m", 1)
+    bars = _normalize_bars(bars)
     data_source = selected_provider.data_source
     provider_status = _provider_status_for_market_data(quote, bars)
 
     if not _has_quote(quote) and allow_mock_fallback:
         quote = fallback.get_quote(symbol)
         bars = fallback.get_bars(symbol, "1m", 1)
+        bars = _normalize_bars(bars)
         if _has_valid_market_data(quote, bars):
             active_provider = fallback
             data_source = fallback.data_source
@@ -222,15 +227,28 @@ def build_payload(
         provider_status = "unavailable"
 
     market_session = build_market_session(now)
+    instrument = build_instrument_payload(symbol)
     market_data = _build_market_data(symbol, quote, bars, data_source, provider_status)
     if market_session["status"] in {"closed", "maintenance"}:
         market_data["data_gate_status"] = DATA_GATE_CLOSED
         market_data["data_gate_reason"] = market_session["data_gate_reason"]
     multi_timeframe_trend = build_multi_timeframe_trend(symbol, active_provider, data_source, provider_status)
+    data_diagnostics = build_data_diagnostics(
+        symbol=symbol,
+        quote=quote,
+        bars=bars,
+        market_data=market_data,
+        multi_timeframe_trend=multi_timeframe_trend,
+        data_source=data_source,
+        provider_status=provider_status,
+        market_session=market_session,
+    )
     return {
+        "instrument": instrument,
         "market_data": market_data,
         "multi_timeframe_trend": multi_timeframe_trend,
         "market_session": market_session,
+        "data_diagnostics": data_diagnostics,
         "context": _build_display_context(context),
         "risk_settings": _format_risk_settings(risk_settings or DEFAULT_RISK_SETTINGS),
         "risk_state": {
@@ -255,7 +273,12 @@ def generate_trade_decision(payload: dict[str, Any]) -> dict[str, Any]:
     }
     market_data = payload.get("market_data", {})
     market_session = payload.get("market_session", {})
+    instrument = payload.get("instrument", {})
     data_gate_status, data_gate_reason = _evaluate_data_gate(market_data)
+
+    if instrument and not bool(instrument.get("decisions_enabled", True)):
+        data_gate_status = DATA_GATE_CLOSED
+        data_gate_reason = "asset class not enabled for Apex decisions"
 
     if market_session.get("status") in {"closed", "maintenance"}:
         data_gate_status = DATA_GATE_CLOSED
@@ -402,6 +425,7 @@ def build_multi_timeframe_trend(
     for timeframe in MULTI_TIMEFRAMES:
         try:
             bars = provider.get_bars(symbol, timeframe, 2)
+            bars = _normalize_bars(bars)
         except Exception:
             bars = []
         timeframes[timeframe] = build_timeframe_trend(
@@ -510,7 +534,7 @@ def _build_market_data(
     data_source: str,
     provider_status: str,
 ) -> dict[str, Any]:
-    closes = [float(bar["close"]) for bar in bars if bar.get("close") is not None]
+    closes = [float(bar["close"]) for bar in bars if _to_float(bar.get("close")) is not None]
     price = _to_float(quote.get("price"))
     if price is None and closes:
         price = closes[-1]
@@ -526,8 +550,8 @@ def _build_market_data(
     rounded_market_data = {
         "symbol": symbol.upper(),
         "price": _round_or_none(price),
-        "session_high": _round_or_none(max(float(bar["high"]) for bar in bars) if bars else None),
-        "session_low": _round_or_none(min(float(bar["low"]) for bar in bars) if bars else None),
+        "session_high": _round_or_none(max(_to_float(bar.get("high")) for bar in bars if _to_float(bar.get("high")) is not None) if any(_to_float(bar.get("high")) is not None for bar in bars) else None),
+        "session_low": _round_or_none(min(_to_float(bar.get("low")) for bar in bars if _to_float(bar.get("low")) is not None) if any(_to_float(bar.get("low")) is not None for bar in bars) else None),
         "vwap": _round_or_none(vwap),
         "ema9": _round_or_none(ema9),
         "ema20": _round_or_none(ema20),
@@ -554,6 +578,144 @@ def _data_mode_for_source(data_source: str) -> str:
     if data_source == "mock":
         return "mock"
     return "unavailable"
+
+
+def build_instrument_payload(symbol: str) -> dict[str, Any]:
+    metadata = get_instrument_metadata(symbol)
+    if metadata is None:
+        return {
+            "symbol": symbol.strip().upper().removeprefix("/"),
+            "display_symbol": symbol.strip().upper(),
+            "provider_symbol": symbol.strip().upper(),
+            "asset_class": "unknown",
+            "exchange": "unknown",
+            "session_type": "unknown",
+            "tick_size": None,
+            "tick_value": None,
+            "point_value": None,
+            "position_unit": "unknown",
+            "decisions_enabled": False,
+        }
+    return {
+        "symbol": metadata.symbol,
+        "display_symbol": metadata.display_symbol,
+        "provider_symbol": metadata.provider_symbol,
+        "asset_class": metadata.asset_class,
+        "exchange": metadata.exchange,
+        "session_type": metadata.session_type,
+        "tick_size": metadata.tick_size,
+        "tick_value": metadata.tick_value,
+        "point_value": metadata.point_value,
+        "position_unit": metadata.position_unit,
+        "decisions_enabled": metadata.decisions_enabled,
+    }
+
+
+def build_data_diagnostics(
+    symbol: str,
+    quote: dict[str, Any],
+    bars: list[dict[str, Any]],
+    market_data: dict[str, Any],
+    multi_timeframe_trend: dict[str, Any],
+    data_source: str,
+    provider_status: str,
+    market_session: dict[str, Any],
+) -> dict[str, Any]:
+    latest_bar_time = _latest_bar_timestamp(bars)
+    return {
+        "quote": {
+            "status": "available" if _has_quote(quote) else "unavailable",
+            "source": quote.get("data_source") or data_source,
+            "requested_symbol": symbol.upper(),
+            "resolved_symbol": quote.get("active_contract") or quote.get("symbol") or symbol.upper(),
+            "timestamp": quote.get("timestamp") or "",
+        },
+        "bars": {
+            "status": _bar_status(bars, market_data),
+            "source": data_source,
+            "requested_symbol": symbol.upper(),
+            "requested_timeframe": "1m",
+            "bars_returned": len(bars),
+            "latest_bar_time": _format_utc(latest_bar_time) if latest_bar_time else "",
+            "missing_fields": _missing_bar_fields(bars),
+            "reason": _bar_diagnostic_reason(bars, market_data, market_session),
+        },
+        "multi_timeframe": {
+            timeframe: {
+                "bars_status": "stale" if row.get("is_stale") else "available",
+                "latest_bar_time": row.get("last_bar_time") or "",
+                "reason": row.get("stale_reason") or "",
+            }
+            for timeframe, row in (multi_timeframe_trend.get("timeframes") or {}).items()
+        },
+        "provider_status": provider_status,
+        "data_gate_status": market_data.get("data_gate_status", DATA_GATE_CLOSED),
+        "data_gate_reason": market_data.get("data_gate_reason", ""),
+        "market_session_status": market_session.get("status", "unknown"),
+    }
+
+
+def _normalize_bars(bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized_bars: list[dict[str, Any]] = []
+    for bar in bars:
+        if not isinstance(bar, dict):
+            continue
+        timestamp = bar.get("timestamp", bar.get("datetime", bar.get("time")))
+        normalized_bars.append(
+            {
+                "timestamp": timestamp,
+                "datetime": timestamp,
+                "open": _to_float(bar.get("open")),
+                "high": _to_float(bar.get("high")),
+                "low": _to_float(bar.get("low")),
+                "close": _to_float(bar.get("close")),
+                "volume": _to_float(bar.get("volume")),
+            }
+        )
+    return normalized_bars
+
+
+def _bar_status(bars: list[dict[str, Any]], market_data: dict[str, Any]) -> str:
+    if not bars:
+        return "unavailable"
+    if bool(market_data.get("is_stale", False)):
+        return "stale"
+    if _missing_bar_fields(bars):
+        return "degraded"
+    return "connected"
+
+
+def _missing_bar_fields(bars: list[dict[str, Any]]) -> list[str]:
+    if not bars:
+        return []
+    required_fields = ("timestamp", "open", "high", "low", "close", "volume")
+    missing: set[str] = set()
+    for bar in bars:
+        for field in required_fields:
+            if bar.get(field) in (None, "", "unavailable"):
+                missing.add(field)
+    return sorted(missing)
+
+
+def _bar_diagnostic_reason(
+    bars: list[dict[str, Any]],
+    market_data: dict[str, Any],
+    market_session: dict[str, Any],
+) -> str:
+    if market_session.get("status") in {"closed", "maintenance"}:
+        return str(market_session.get("data_gate_reason") or "market closed")
+    if not bars:
+        return "provider returned empty candles"
+    missing = _missing_bar_fields(bars)
+    if "volume" in missing:
+        return "bars missing volume"
+    if len(bars) < 20:
+        return "not enough bars for EMA20"
+    if bool(market_data.get("is_stale", False)):
+        return str(market_data.get("stale_reason") or "market data stale")
+    if missing:
+        return f"bars missing fields: {', '.join(missing)}"
+    return ""
 
 
 def build_market_session(now: datetime | None = None) -> dict[str, Any]:

@@ -160,3 +160,77 @@ Trend rules:
 - `mixed`: EMAs are not clearly stacked
 
 The multi-timeframe panel is context-only in Phase 3A. It must not change the main trade decision rules unless separately approved. News, Truth Social, and social context must not affect multi-timeframe trend.
+
+## Saturday Phase 3 Cleanup Notes
+
+Known futures market closures are handled as a market-session state, not as a Schwab provider failure.
+
+During Saturday/weekend closure:
+
+- Show the Market Closed banner as the primary warning.
+- Show `Provider: MARKET CLOSED` when Schwab quote access is reachable but the futures session is closed.
+- Keep `Risk Gate` separate from market/data status.
+- Keep `Risk Gate` open when risk rules are okay.
+- Keep `Data Gate` closed.
+- Return `NO TRADE` with `no_trade_reason = market closed`.
+- Show the last available quote if Schwab provides one.
+- Suppress the red stale-data banner unless the market should be open and an unexpected data/provider problem exists.
+
+The payload includes `data_diagnostics` so Railway responses can be inspected without guessing from the dashboard. Diagnostics include quote status, bar status, bars returned, latest bar time, missing fields, stale reasons, provider status, and Data Gate reason. Secrets and tokens must never be logged or emitted.
+
+## Asset-Class Preparation
+
+The instrument model is prepared for:
+
+- `future`
+- `stock`
+- `etf`
+
+Futures remain the only asset class currently enabled for Apex trade decisions. Stocks and ETFs are metadata-only until a later approved phase.
+
+Prepared instruments:
+
+- Futures: `/ES`, `/NQ`, `/GC`, `/SI` and the existing futures metadata set.
+- ETFs: `SPY`, `QQQ`, `IWM`, `DIA`.
+- Stocks: `AAPL`, `MSFT`, `NVDA`, `TSLA`.
+
+Each instrument supports:
+
+- `symbol`
+- `display_symbol`
+- `provider_symbol`
+- `asset_class`
+- `exchange`
+- `session_type`
+- `tick_size`
+- `tick_value`
+- `point_value`
+- `position_unit`
+
+Later equity-specific TODOs:
+
+- equity session handling
+- premarket and after-hours handling
+- equity VWAP reset
+- share-based risk math
+- stock/ETF-specific Data Gate rules
+- equity Level 2/tape differences
+- options support later
+
+## Sunday Open Validation Checklist
+
+Run this between Sunday 6:05 PM and 6:15 PM ET after futures reopen:
+
+- Confirm `Provider` changes from `MARKET CLOSED` to `CONNECTED` or another valid provider status.
+- Confirm `Data Gate` opens once fresh bars are available.
+- Confirm `Last Update` changes to current market time.
+- Confirm VWAP populates.
+- Confirm EMA 9 and EMA 20 populate.
+- Confirm RSI populates.
+- Confirm Session High and Session Low populate.
+- Confirm Multi-Timeframe Trend populates for `30m`, `15m`, `5m`, `3m`, and `1m` when enough bars are available.
+- Confirm stale warning disappears when data is fresh.
+- Confirm `NO TRADE`, `LONG`, or `SHORT` is based only on technical criteria plus data/risk gates.
+- Confirm no Schwab order APIs, Tradovate order APIs, or broker order APIs are called.
+
+Do not close Phase 3 until this live Sunday validation confirms fresh bars, indicators, MTF updates, and Data Gate behavior.

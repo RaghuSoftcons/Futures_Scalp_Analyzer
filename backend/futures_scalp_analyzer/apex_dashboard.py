@@ -547,17 +547,18 @@ def render_apex_dashboard() -> str:
       return "mini-badge mini-mixed";
     }}
 
-    function renderMultiTimeframeTrend(mtf) {{
+    function renderMultiTimeframeTrend(mtf, marketSession = {{}}) {{
       const container = document.getElementById("multi-timeframe-trend");
       if (!mtf || !mtf.timeframes) {{
         container.innerHTML = '<div class="context-item muted">Multi-timeframe trend unavailable.</div>';
         return;
       }}
       const order = ["30m", "15m", "5m", "3m", "1m"];
+      const isMarketClosed = marketSession.status === "closed" || marketSession.status === "maintenance";
       const rows = order.map((timeframe) => {{
         const row = mtf.timeframes[timeframe] || {{}};
-        const trendText = row.is_stale ? "Stale" : labelize(row.trend);
-        const stackText = row.is_stale ? "Stale" : labelize(row.ema_stack_status);
+        const trendText = isMarketClosed ? "Market Closed" : (row.is_stale ? "Stale" : labelize(row.trend));
+        const stackText = isMarketClosed ? "Market Closed" : (row.is_stale ? "Stale" : labelize(row.ema_stack_status));
         return `
           <div class="mtf-row">
             <strong>${{timeframe}}</strong>
@@ -579,7 +580,7 @@ def render_apex_dashboard() -> str:
       `;
     }}
 
-    function renderQuickStatus(market, decision, readout) {{
+    function renderQuickStatus(market, decision, readout, marketSession = {{}}) {{
       const relationships = readout.price_relationships || [];
       const mtf = window.currentMultiTimeframeTrend || {{}};
       const recommendation = decision.recommendation || "NO TRADE";
@@ -588,7 +589,7 @@ def render_apex_dashboard() -> str:
       const riskText = riskStatus === "blocked" ? "RISK GATE CLOSED" : "RISK GATE OPEN";
       const dataGateText = dataGateStatus === "open" ? "DATA GATE OPEN" : "DATA GATE CLOSED";
       const mtfRows = Object.values(mtf.timeframes || {{}});
-      const mtfText = mtfRows.some((row) => row && row.is_stale) ? "MTF: Stale" : "MTF: " + labelize(mtf.dominant_trend || "mixed");
+      const mtfText = marketSession.status === "closed" || marketSession.status === "maintenance" ? "MTF: Market Closed" : (mtfRows.some((row) => row && row.is_stale) ? "MTF: Stale" : "MTF: " + labelize(mtf.dominant_trend || "mixed"));
       const trendText = prettyTrend(market.trend || "neutral").toUpperCase();
       const items = [
         [recommendation, "strong"],
@@ -670,9 +671,9 @@ def render_apex_dashboard() -> str:
           metric("no_trade_reason", decision.no_trade_reason || "none", {{ className: recommendation === "NO TRADE" ? "warning" : "" }}),
           metric("manual_execution_note", decision.manual_execution_note)
         ].join("");
-        renderMultiTimeframeTrend(payload.multi_timeframe_trend || {{}});
+        renderMultiTimeframeTrend(payload.multi_timeframe_trend || {{}}, marketSession);
         renderTechnicalReadout(technicalReadout);
-        renderQuickStatus(market, decision, technicalReadout);
+        renderQuickStatus(market, decision, technicalReadout, marketSession);
         renderContext(decision);
         document.getElementById("status-line").textContent = "Updated";
         document.getElementById("status-line").className = "status-message";

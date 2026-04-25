@@ -5,7 +5,7 @@ import asyncio
 from futures_scalp_analyzer.models import FuturesScalpIdeaRequest
 from futures_scalp_analyzer.price_feed import FALLBACK_ACTIVE_CONTRACTS, StaticPriceFeed, normalize_root_symbol
 from futures_scalp_analyzer.service import analyze_request
-from futures_scalp_analyzer.symbols import SUPPORTED_SYMBOLS
+from futures_scalp_analyzer.symbols import INSTRUMENT_REGISTRY, SUPPORTED_SYMBOLS, get_instrument_metadata
 
 
 def test_mnq_contract_metadata():
@@ -20,6 +20,47 @@ def test_nq_contract_metadata():
     assert nq.point_value == 20.0
     assert nq.tick_value == 5.0
     assert nq.is_micro is False
+
+
+def test_instrument_metadata_identifies_futures():
+    nq = get_instrument_metadata("/NQ")
+
+    assert nq is not None
+    assert nq.asset_class == "future"
+    assert nq.display_symbol == "/NQ"
+    assert nq.provider_symbol == "/NQ"
+    assert nq.session_type == "futures_eth"
+    assert nq.position_unit == "contracts"
+    assert nq.decisions_enabled is True
+
+
+def test_instrument_metadata_identifies_etfs():
+    spy = get_instrument_metadata("SPY")
+
+    assert spy is not None
+    assert spy.asset_class == "etf"
+    assert spy.display_symbol == "SPY"
+    assert spy.provider_symbol == "SPY"
+    assert spy.session_type == "equity_rth"
+    assert spy.position_unit == "shares"
+    assert spy.decisions_enabled is False
+
+
+def test_instrument_metadata_identifies_stocks():
+    nvda = get_instrument_metadata("NVDA")
+
+    assert nvda is not None
+    assert nvda.asset_class == "stock"
+    assert nvda.display_symbol == "NVDA"
+    assert nvda.provider_symbol == "NVDA"
+    assert nvda.session_type == "equity_rth"
+    assert nvda.position_unit == "shares"
+    assert nvda.decisions_enabled is False
+
+
+def test_instrument_registry_contains_prepared_equity_symbols():
+    for symbol in ("SPY", "QQQ", "IWM", "DIA", "AAPL", "MSFT", "NVDA", "TSLA"):
+        assert symbol in INSTRUMENT_REGISTRY
 
 
 def test_zb_has_no_micro_counterpart():

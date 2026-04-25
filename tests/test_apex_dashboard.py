@@ -76,6 +76,8 @@ def test_dashboard_route_contains_required_static_contract():
     assert "multi-timeframe-trend" in body
     assert "renderMultiTimeframeTrend" in body
     assert "MTF: " in body
+    assert "MTF: Market Closed" in body
+    assert "Market Closed" in body
     assert "Quick Status" in body
     assert "quick-status" in body
     assert "renderQuickStatus" in body

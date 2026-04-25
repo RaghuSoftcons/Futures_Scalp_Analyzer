@@ -64,6 +64,25 @@ class QuoteOnlySchwabProvider(MarketDataProvider):
         return []
 
 
+class MissingVolumeProvider(MarketDataProvider):
+    data_source = "schwab"
+
+    def get_quote(self, symbol: str) -> dict:
+        return {"symbol": symbol, "price": 130.0, "timestamp": CURRENT_TIMESTAMP, "data_source": self.data_source}
+
+    def get_bars(self, symbol: str, timeframe: str, lookback: int) -> list[dict]:
+        return [
+            {
+                "timestamp": CURRENT_TIMESTAMP,
+                "open": 100.0 + idx,
+                "high": 100.5 + idx,
+                "low": 99.5 + idx,
+                "close": 100.0 + idx,
+            }
+            for idx in range(30)
+        ]
+
+
 class StaleSchwabProvider(MarketDataProvider):
     data_source = "schwab"
 
@@ -218,7 +237,7 @@ def test_build_payload_returns_valid_structured_json():
         },
     )
 
-    assert set(payload) == {"market_data", "multi_timeframe_trend", "market_session", "context", "risk_settings", "risk_state", "timestamp"}
+    assert set(payload) == {"instrument", "market_data", "multi_timeframe_trend", "market_session", "data_diagnostics", "context", "risk_settings", "risk_state", "timestamp"}
     assert set(payload["market_data"]) == {
         "symbol",
         "price",
@@ -241,6 +260,8 @@ def test_build_payload_returns_valid_structured_json():
         }
     assert payload["context"]["context_rule"] == "Display only. Not used in trade decisions."
     assert payload["context"]["social"][0]["source"] == "Truth Social"
+    assert payload["instrument"]["asset_class"] == "future"
+    assert payload["instrument"]["position_unit"] == "contracts"
     assert set(payload["multi_timeframe_trend"]["timeframes"]) == {"30m", "15m", "5m", "3m", "1m"}
     assert set(payload["market_session"]) == {
         "status",
@@ -252,6 +273,9 @@ def test_build_payload_returns_valid_structured_json():
         "data_gate_reason",
         "holiday_note",
     }
+    assert payload["data_diagnostics"]["quote"]["status"] == "available"
+    assert payload["data_diagnostics"]["bars"]["bars_returned"] == 80
+    assert payload["data_diagnostics"]["data_gate_status"] == "closed"
 
 
 def test_market_session_saturday_reports_sunday_reopen():
@@ -286,6 +310,29 @@ def test_market_session_open_does_not_set_data_gate_reason():
 
     assert session["status"] == "open"
     assert session["data_gate_reason"] == ""
+
+
+def test_quote_available_bars_unavailable_diagnostics_are_specific():
+    payload = build_payload("NQ", provider=QuoteOnlySchwabProvider(), allow_mock_fallback=False, now=OPEN_MARKET_TIME)
+
+    diagnostics = payload["data_diagnostics"]
+
+    assert diagnostics["quote"]["status"] == "available"
+    assert diagnostics["bars"]["status"] == "unavailable"
+    assert diagnostics["bars"]["bars_returned"] == 0
+    assert diagnostics["bars"]["reason"] == "provider returned empty candles"
+    assert payload["market_data"]["data_gate_reason"] == "market data bars unavailable"
+
+
+def test_missing_volume_diagnostics_are_specific():
+    payload = build_payload("NQ", provider=MissingVolumeProvider(), allow_mock_fallback=False, now=OPEN_MARKET_TIME)
+    decision = generate_trade_decision(payload)
+
+    assert payload["data_diagnostics"]["bars"]["missing_fields"] == ["volume"]
+    assert payload["data_diagnostics"]["bars"]["reason"] == "bars missing volume"
+    assert payload["market_data"]["vwap"] is None
+    assert decision["recommendation"] == "NO TRADE"
+    assert decision["risk_status"] == "allowed"
 
 
 def test_timeframe_ema_values():
@@ -418,6 +465,7 @@ def test_market_closed_blocks_trade_even_when_technical_data_is_valid():
     assert decision["risk_status"] == "allowed"
     assert decision["data_gate_status"] == "closed"
     assert decision["no_trade_reason"] == "market closed"
+    assert payload["data_diagnostics"]["bars"]["reason"] == "market closed"
 
 
 def test_technical_readout_uses_market_session_message_when_closed():
@@ -447,6 +495,24 @@ def test_stale_market_data_returns_no_trade():
     assert decision["no_trade_reason"] == "market data stale"
     assert decision["risk_status"] == "allowed"
     assert decision["data_gate_status"] == "closed"
+
+
+def test_stock_and_etf_asset_classes_are_not_enabled_for_decisions():
+    stock_payload = build_payload("AAPL", provider=MockMarketDataProvider(), now=OPEN_MARKET_TIME)
+    etf_payload = build_payload("SPY", provider=MockMarketDataProvider(), now=OPEN_MARKET_TIME)
+
+    stock_decision = generate_trade_decision(stock_payload)
+    etf_decision = generate_trade_decision(etf_payload)
+
+    assert stock_payload["instrument"]["asset_class"] == "stock"
+    assert stock_payload["instrument"]["position_unit"] == "shares"
+    assert stock_payload["instrument"]["decisions_enabled"] is False
+    assert stock_decision["recommendation"] == "NO TRADE"
+    assert stock_decision["no_trade_reason"] == "asset class not enabled for Apex decisions"
+    assert etf_payload["instrument"]["asset_class"] == "etf"
+    assert etf_payload["instrument"]["position_unit"] == "shares"
+    assert etf_payload["instrument"]["decisions_enabled"] is False
+    assert etf_decision["recommendation"] == "NO TRADE"
 
 
 def test_required_market_data_missing_closes_data_gate():
