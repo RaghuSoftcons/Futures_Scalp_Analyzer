@@ -46,6 +46,20 @@ FALLBACK_ACTIVE_CONTRACTS: dict[str, str] = {
     "/MGC": "/MGCM26",
     "/SIL": "/SILM26",
 }
+FALLBACK_ACTIVE_CONTRACT_EXPIRATIONS: dict[str, str] = {
+    "/ES": "2026-06-19",
+    "/NQ": "2026-06-19",
+    "/GC": "2026-06-26",
+    "/CL": "2026-05-20",
+    "/SI": "2026-06-29",
+    "/ZB": "2026-06-20",
+    "/UB": "2026-06-20",
+    "/MNQ": "2026-06-19",
+    "/MES": "2026-06-19",
+    "/MCL": "2026-05-20",
+    "/MGC": "2026-06-26",
+    "/SIL": "2026-06-29",
+}
 
 ROOT_SYMBOLS: tuple[str, ...] = tuple(FALLBACK_ACTIVE_CONTRACTS.keys())
 ACTIVE_CONTRACT_CACHE_TTL = timedelta(hours=24)
@@ -166,7 +180,7 @@ class ActiveContractResolver:
         except Exception:
             LOGGER.warning("Falling back to hardcoded active contract map", exc_info=True)
             self._cache = {
-                root: {"active_contract": contract, "expiration": None}
+                root: {"active_contract": contract, "expiration": FALLBACK_ACTIVE_CONTRACT_EXPIRATIONS.get(root)}
                 for root, contract in FALLBACK_ACTIVE_CONTRACTS.items()
             }
             self._last_refresh_at = now
@@ -402,7 +416,7 @@ class SchwabQuotePriceFeed(PriceFeed):
                 continue
             refreshed_cache[root] = {
                 "active_contract": str(item.get("active_contract") or FALLBACK_ACTIVE_CONTRACTS.get(root, root)),
-                "expiration": str(item.get("expiration") or "") or None,
+                "expiration": str(item.get("expiration") or "") or FALLBACK_ACTIVE_CONTRACT_EXPIRATIONS.get(root),
             }
         return refreshed_cache or None
 

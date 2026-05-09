@@ -235,3 +235,27 @@ def test_get_price_history_prefers_broker_when_configured(monkeypatch):
     bars = feed.get_price_history("NQ", "minute", 5, "day", 1)
 
     assert bars[0]["close"] == 100.5
+
+
+def test_broker_active_contracts_fill_fallback_expiration(monkeypatch):
+    monkeypatch.setenv("SCHWAB_BROKER_BASE_URL", "https://broker.example")
+    monkeypatch.setenv("SCHWAB_BROKER_API_KEY", "broker-key")
+
+    def fake_get(url, headers, params=None, timeout=None):
+        return MockResponse(
+            200,
+            {
+                "contracts": [
+                    {"root": "/NQ", "active_contract": "/NQM26", "expiration": None}
+                ]
+            },
+        )
+
+    monkeypatch.setattr(price_feed_module.httpx, "get", fake_get)
+
+    feed = SchwabQuotePriceFeed()
+    contracts = feed.list_active_contracts()
+    nq = next(item for item in contracts if item["root"] == "/NQ")
+
+    assert nq["active_contract"] == "/NQM26"
+    assert nq["expiration"] == "2026-06-19"
