@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-
 from fastapi.testclient import TestClient
 
 from app import create_app
@@ -42,7 +41,8 @@ def test_price_endpoint_returns_quote(monkeypatch):
     response = client.get("/price/ES")
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    assert body == {
         "symbol": "ES",
         "root": "/ES",
         "active_contract": "/ESM26",
@@ -54,7 +54,12 @@ def test_price_endpoint_returns_quote(monkeypatch):
         "mark": 7143.25,
         "timestamp": "2026-04-20T14:00:00Z",
         "token_refreshed": False,
+        "market_status": "market_closed",
+        "is_market_open": False,
+        "is_live": False,
+        "quote_age_seconds": body["quote_age_seconds"],
     }
+    assert isinstance(body["quote_age_seconds"], int)
 
 
 def test_price_endpoint_refreshes_on_401(monkeypatch):
@@ -85,6 +90,45 @@ def test_price_endpoint_refreshes_on_401(monkeypatch):
     assert body["active_contract"] == "/NQM26"
     assert body["price"] == 20345.25
     assert body["token_refreshed"] is True
+    assert body["market_status"] in {"live", "stale", "market_closed"}
+
+
+def test_price_endpoint_reports_closed_market_for_weekend_quote(monkeypatch):
+    monkeypatch.setenv("SCHWAB_ACCESS_TOKEN", "access-token")
+    monkeypatch.setenv("SCHWAB_REFRESH_TOKEN", "refresh-token")
+    monkeypatch.setenv("SCHWAB_CLIENT_ID", "client-id")
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "client-secret")
+
+    monkeypatch.setattr(price_feed_module.httpx, "get", lambda url, headers, timeout: MockResponse(200, {}))
+    feed = SchwabQuotePriceFeed()
+    monkeypatch.setattr(
+        feed,
+        "get_quote_details",
+        lambda symbol: {
+            "root": "/NQ",
+            "active_contract": "/NQM26",
+            "last": 29333.75,
+            "bid": 29331.5,
+            "ask": 29343.25,
+            "mark": 29333.75,
+            "timestamp": "2026-05-08T21:00:00.068000Z",
+            "token_refreshed": False,
+            "source": "schwab_broker",
+        },
+    )
+
+    app = create_app(feed)
+    client = TestClient(app)
+
+    response = client.get("/price/NQ")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["active_contract"] == "/NQM26"
+    assert body["market_status"] == "market_closed"
+    assert body["is_market_open"] is False
+    assert body["is_live"] is False
+    assert isinstance(body["quote_age_seconds"], int)
 
 
 def test_price_endpoint_returns_error_payload_on_network_error(monkeypatch):

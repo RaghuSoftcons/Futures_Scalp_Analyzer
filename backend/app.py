@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from fastapi import Depends, FastAPI
@@ -28,6 +29,8 @@ from futures_scalp_analyzer.price_feed import (
 from futures_scalp_analyzer.risk import evaluate_session_status
 from futures_scalp_analyzer.service import analyze_request
 
+EASTERN_TZ = ZoneInfo("America/New_York")
+
 
 def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
     app = FastAPI(title="Futures Scalp Analyzer", version="0.1.0")
@@ -36,6 +39,43 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
 
     def get_price_feed() -> PriceFeed:
         return app.state.price_feed
+
+    def parse_quote_timestamp(timestamp: str | None) -> datetime | None:
+        if not timestamp:
+            return None
+        try:
+            return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def is_futures_market_open(now_utc: datetime | None = None) -> bool:
+        now = (now_utc or datetime.now(timezone.utc)).astimezone(EASTERN_TZ)
+        weekday = now.weekday()
+        hour_minute = (now.hour, now.minute)
+
+        if weekday == 5:
+            return False
+        if weekday == 6:
+            return hour_minute >= (18, 0)
+        if weekday == 4:
+            return hour_minute < (17, 0)
+        return not ((17, 0) <= hour_minute < (18, 0))
+
+    def build_market_status(timestamp: str | None) -> dict[str, Any]:
+        quote_dt = parse_quote_timestamp(timestamp)
+        now_utc = datetime.now(timezone.utc)
+        market_open = is_futures_market_open(now_utc)
+        age_seconds = None
+        if quote_dt is not None:
+            age_seconds = max(int((now_utc - quote_dt.astimezone(timezone.utc)).total_seconds()), 0)
+        is_live = market_open and age_seconds is not None and age_seconds <= 120
+        status = "live" if is_live else "market_closed" if not market_open else "stale"
+        return {
+            "market_status": status,
+            "is_market_open": market_open,
+            "is_live": is_live,
+            "quote_age_seconds": age_seconds,
+        }
 
     def get_apex_provider(feed: PriceFeed) -> MarketDataProvider:
         configured_provider = getattr(app.state, "apex_provider", None)
@@ -206,7 +246,7 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
                 "mark": quote_details.get("mark"),
                 "timestamp": quote_details.get("timestamp"),
                 "token_refreshed": quote_details.get("token_refreshed", False),
-            }
+            } | build_market_status(quote_details.get("timestamp"))
         live_price = await feed.get_live_price(normalized_symbol)
         return {
             "symbol": normalized_symbol,
