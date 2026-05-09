@@ -18,6 +18,10 @@ class MockResponse:
     def json(self) -> dict:
         return self._payload
 
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("boom", request=None, response=None)
+
 
 def test_get_price_returns_float_on_success(monkeypatch):
     monkeypatch.setenv("SCHWAB_ACCESS_TOKEN", "token")
@@ -145,3 +149,89 @@ def test_get_price_history_allows_thirty_minute_bars(monkeypatch):
             "datetime": 1_800_000_000_000,
         }
     ]
+
+
+def test_get_price_prefers_broker_quote_when_configured(monkeypatch):
+    monkeypatch.setenv("SCHWAB_BROKER_BASE_URL", "https://broker.example")
+    monkeypatch.setenv("SCHWAB_BROKER_API_KEY", "broker-key")
+
+    def fake_get(url, headers, params=None, timeout=None):
+        assert url == "https://broker.example/broker/futures/active-contracts"
+        assert headers["X-API-Key"] == "broker-key"
+        return MockResponse(
+            200,
+            {
+                "contracts": [
+                    {"root": "/NQ", "active_contract": "/NQM26", "expiration": "2026-06-19"}
+                ]
+            },
+        )
+
+    monkeypatch.setattr(price_feed_module.httpx, "get", fake_get)
+
+    feed = SchwabQuotePriceFeed()
+
+    def fake_broker_json(path, params=None):
+        assert path == "/broker/futures/quote/NQ"
+        assert params is None
+        return {
+            "root": "/NQ",
+            "active_contract": "/NQM26",
+            "last": 26754.75,
+            "bid": 26754.5,
+            "ask": 26755.0,
+            "mark": 26754.75,
+            "timestamp": "2026-05-09T15:00:00Z",
+            "source": "schwab_broker",
+        }
+
+    monkeypatch.setattr(feed, "_fetch_broker_json", fake_broker_json)
+
+    assert feed.get_price("NQ") == 26754.75
+    assert feed.get_quote_details("NQ")["source"] == "schwab_broker"
+
+
+def test_get_price_history_prefers_broker_when_configured(monkeypatch):
+    monkeypatch.setenv("SCHWAB_BROKER_BASE_URL", "https://broker.example")
+    monkeypatch.setenv("SCHWAB_BROKER_API_KEY", "broker-key")
+
+    def fake_get(url, headers, params=None, timeout=None):
+        return MockResponse(
+            200,
+            {
+                "contracts": [
+                    {"root": "/NQ", "active_contract": "/NQM26", "expiration": "2026-06-19"}
+                ]
+            },
+        )
+
+    monkeypatch.setattr(price_feed_module.httpx, "get", fake_get)
+    feed = SchwabQuotePriceFeed()
+
+    def fake_broker_json(path, params=None):
+        assert path == "/broker/futures/pricehistory/NQ"
+        assert params == {
+            "frequency_type": "minute",
+            "frequency": 5,
+            "period_type": "day",
+            "period": 1,
+        }
+        return {
+            "symbol": "/NQ",
+            "candles": [
+                {
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.5,
+                    "volume": 10,
+                    "datetime": 1_800_000_000_000,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(feed, "_fetch_broker_json", fake_broker_json)
+
+    bars = feed.get_price_history("NQ", "minute", 5, "day", 1)
+
+    assert bars[0]["close"] == 100.5

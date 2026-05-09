@@ -49,6 +49,7 @@ FALLBACK_ACTIVE_CONTRACTS: dict[str, str] = {
 
 ROOT_SYMBOLS: tuple[str, ...] = tuple(FALLBACK_ACTIVE_CONTRACTS.keys())
 ACTIVE_CONTRACT_CACHE_TTL = timedelta(hours=24)
+BROKER_TIMEOUT_SECONDS = 10.0
 
 
 def normalize_root_symbol(symbol: str) -> str | None:
@@ -131,6 +132,13 @@ class ActiveContractResolver:
         ):
             return self._cache
 
+        if self._client.broker_enabled:
+            broker_cache = self._client.fetch_broker_active_contracts()
+            if broker_cache:
+                self._cache = broker_cache
+                self._last_refresh_at = now
+                return self._cache
+
         encoded_roots = ",".join(urllib.parse.quote(root, safe="") for root in ROOT_SYMBOLS)
         try:
             response, _ = self._client.fetch_json(
@@ -197,11 +205,16 @@ class SchwabQuotePriceFeed(PriceFeed):
         self._client_secret = os.getenv("SCHWAB_CLIENT_SECRET")
         self.api_base_url = os.getenv("SCHWAB_API_BASE_URL", "https://api.schwabapi.com").rstrip("/")
         self._token_url = os.getenv("SCHWAB_TOKEN_URL", "https://api.schwabapi.com/v1/oauth/token")
+        self._broker_base_url = os.getenv("SCHWAB_BROKER_BASE_URL", "").rstrip("/")
+        self._broker_api_key = os.getenv("SCHWAB_BROKER_API_KEY", "")
         self._resolver = ActiveContractResolver(self)
 
     async def get_live_price(self, symbol: str) -> float | None:
         return await asyncio.to_thread(self.get_price, symbol)
 
+    @property
+    def broker_enabled(self) -> bool:
+        return bool(self._broker_base_url and self._broker_api_key)
 
     async def get_bars(
         self,
@@ -232,6 +245,17 @@ class SchwabQuotePriceFeed(PriceFeed):
         if root_symbol is None:
             LOGGER.warning("Unsupported symbol requested for bars: %s", symbol)
             return []
+
+        if self.broker_enabled:
+            broker_bars = self._fetch_broker_price_history(
+                root_symbol,
+                frequency_type,
+                frequency,
+                period_type,
+                period,
+            )
+            if broker_bars:
+                return broker_bars
 
         allowed_frequency_type = {"minute", "daily"}
         allowed_frequency = {1, 3, 5, 15, 30}
@@ -320,6 +344,11 @@ class SchwabQuotePriceFeed(PriceFeed):
             LOGGER.warning("Unsupported symbol requested from Schwab feed: %s", symbol)
             return None
 
+        if self.broker_enabled:
+            broker_quote = self._fetch_broker_quote_details(root_symbol)
+            if broker_quote is not None:
+                return broker_quote
+
         active_contract = self._resolver.get_active_contract(root_symbol)
         if active_contract is None:
             LOGGER.warning("No active contract available for %s", root_symbol)
@@ -359,6 +388,101 @@ class SchwabQuotePriceFeed(PriceFeed):
             }
         except Exception:
             LOGGER.exception("Failed to parse Schwab quote payload for %s", active_contract)
+            return None
+
+    def fetch_broker_active_contracts(self) -> dict[str, dict[str, str | None]] | None:
+        payload = self._fetch_broker_json("/broker/futures/active-contracts")
+        if payload is None:
+            return None
+        contracts = payload.get("contracts", [])
+        refreshed_cache: dict[str, dict[str, str | None]] = {}
+        for item in contracts:
+            root = str(item.get("root", "") or "")
+            if not root:
+                continue
+            refreshed_cache[root] = {
+                "active_contract": str(item.get("active_contract") or FALLBACK_ACTIVE_CONTRACTS.get(root, root)),
+                "expiration": str(item.get("expiration") or "") or None,
+            }
+        return refreshed_cache or None
+
+    def _fetch_broker_quote_details(self, root_symbol: str) -> dict[str, Any] | None:
+        payload = self._fetch_broker_json(f"/broker/futures/quote/{root_symbol.removeprefix('/')}")
+        if payload is None:
+            return None
+        return {
+            "root": str(payload.get("root") or root_symbol),
+            "active_contract": str(payload.get("active_contract") or root_symbol),
+            "last": payload.get("last"),
+            "bid": payload.get("bid"),
+            "ask": payload.get("ask"),
+            "mark": payload.get("mark"),
+            "timestamp": payload.get("timestamp"),
+            "token_refreshed": False,
+            "source": str(payload.get("source") or "schwab_broker"),
+        }
+
+    def _fetch_broker_price_history(
+        self,
+        root_symbol: str,
+        frequency_type: str,
+        frequency: int,
+        period_type: str,
+        period: int,
+    ) -> list[dict[str, float | int | str]]:
+        payload = self._fetch_broker_json(
+            f"/broker/futures/pricehistory/{root_symbol.removeprefix('/')}",
+            params={
+                "frequency_type": frequency_type,
+                "frequency": frequency,
+                "period_type": period_type,
+                "period": period,
+            },
+        )
+        if payload is None:
+            return []
+        candles = payload.get("candles", [])
+        try:
+            return [
+                {
+                    "open": float(candle.get("open", 0.0)),
+                    "high": float(candle.get("high", 0.0)),
+                    "low": float(candle.get("low", 0.0)),
+                    "close": float(candle.get("close", 0.0)),
+                    "volume": float(candle.get("volume", 0.0)),
+                    "datetime": int(candle.get("datetime", 0)),
+                }
+                for candle in candles
+            ]
+        except Exception:
+            LOGGER.exception("Failed to parse broker price history payload for %s", root_symbol)
+            return []
+
+    def _fetch_broker_json(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if not self.broker_enabled:
+            return None
+        try:
+            response = httpx.get(
+                f"{self._broker_base_url}{path}",
+                headers={"X-API-Key": self._broker_api_key},
+                params=params,
+                timeout=BROKER_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, dict):
+                return payload
+            LOGGER.warning("Broker returned non-dict payload for %s", path)
+            return None
+        except httpx.HTTPError:
+            LOGGER.exception("Broker request failed for %s", path)
+            return None
+        except Exception:
+            LOGGER.exception("Unexpected broker error for %s", path)
             return None
 
     def fetch_quote_response(self, schwab_symbol: str) -> tuple[httpx.Response | None, bool]:
