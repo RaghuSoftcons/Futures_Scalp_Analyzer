@@ -92,6 +92,12 @@ def test_unavailable_when_live_price_missing():
     assert compute_final_recommendation(ctx) == "unavailable"
 
 
+def test_unavailable_when_market_context_missing():
+    ctx = make_ctx(market_data_available=False)
+    assert compute_final_recommendation(ctx) == "unavailable"
+    assert "wait-only" in ctx["final_recommendation_comment"]
+
+
 def test_account_scaling_templates():
     assert get_account_risk_template(100000) == {
         "account_size": 100000,

@@ -387,6 +387,58 @@ def _build_gpt_fields(
             "economic_calendar": "## Economic Calendar\nunavailable",
         }
 
+    if not market_data_available:
+        return {
+            "direction": direction,
+            "verdict": verdict,
+            "entry_zone": "WAIT FOR REOPEN",
+            "stop_loss": f"{_format_dollars(risk_per_contract)} ({_format_price_level(stop_price)})",
+            "target": f"{_format_dollars(reward_per_contract)} ({_format_price_level(target_price)})",
+            "rr_ratio_display": f"1:{rr_ratio:.2f}",
+            "why": (
+                f"{symbol} does not have fresh intraday market context available right now, so the scalp engine cannot confirm timing. "
+                "Wait for the next active session and a live bar set before taking a directional trade."
+            ),
+            "watch_out_for": "Do not act on stale or closed-session quotes; wait for live session data and fresh market structure.",
+            "account_summary": f"Account: ${account_size:,} | Losses today: {losses_today}/3 | P&L today: {_format_dollars(pnl_today)}",
+            "ema9": "unavailable",
+            "ema20": "unavailable",
+            "vwap": "unavailable",
+            "rsi": "unavailable",
+            "trend": "unavailable",
+            "market_structure": "unavailable",
+            "volume_condition": "unavailable",
+            "rsi_condition": "unavailable",
+            "session_high": "unavailable",
+            "session_low": "unavailable",
+            "prior_day_high": "unavailable",
+            "prior_day_low": "unavailable",
+            "live_atr": "unavailable",
+            "market_data_available": "false",
+            "timeframe_bias": (
+                "## Timeframe Bias\n"
+                f"1-min: {bias_1m}\n"
+                f"3-min: {bias_3m}\n"
+                f"5-min: {bias_5m}\n"
+                f"15-min: {bias_15m}\n"
+                f"Alignment: {timeframe_alignment}"
+            ),
+            "news_context": (
+                "## News & Geopolitical Context\n"
+                f"News bias: {news_bias}\n"
+                f"News note: {news_bias_note or 'none'}\n"
+                f"Recent Truth Social posts: {', '.join(trump_posts_recent) if trump_posts_recent else 'none'}\n"
+                f"Top headlines: {', '.join(top_headlines) if top_headlines else 'none'}"
+            ),
+            "economic_calendar": (
+                "## Economic Calendar\n"
+                f"Event warning active: {economic_event_warning}\n"
+                f"Next economic event: {next_economic_event or 'none'}\n"
+                f"Events today: {', '.join(economic_events_today) if economic_events_today else 'none'}\n"
+                f"Warning message: {economic_warning_message or 'none'}"
+            ),
+        }
+
     price_context = "above" if live_price is not None and live_price > entry_price else "below"
     why = (
         f"{symbol} is trading {price_context} the planned entry, which makes the current setup read as {entry_verdict} with a {trade_verdict} risk profile. "

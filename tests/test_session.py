@@ -59,3 +59,20 @@ def test_locked_when_daily_loss_guard_breached():
     response = asyncio.run(analyze_request(request, StaticPriceFeed({"ES": 5300.0})))
     assert response.session_status == "LOCKED"
     assert response.verdict == "STOP TRADING"
+
+
+def test_wait_when_market_context_is_unavailable():
+    request = FuturesScalpIdeaRequest(
+        symbol="NQ",
+        account_size=100000,
+    )
+
+    response = asyncio.run(analyze_request(request, StaticPriceFeed({"NQ": 29333.75})))
+
+    assert response.market_data_available is False
+    assert response.final_recommendation == "unavailable"
+    assert response.verdict == "WAIT"
+    assert response.auto_selected is True
+    assert response.requested_side is None
+    assert response.side in {"long", "short"}
+    assert response.entry_zone == "WAIT FOR REOPEN"

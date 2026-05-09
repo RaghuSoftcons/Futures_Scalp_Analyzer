@@ -323,6 +323,14 @@ def compute_final_recommendation(ctx: dict) -> str:
             ctx["final_recommendation_comment"] = FINAL_RECOMMENDATION_COMMENTS.get(existing, "")
         return existing
 
+    if ctx.get("market_data_available") is False:
+        recommendation = "unavailable"
+        ctx["final_recommendation"] = recommendation
+        ctx["final_recommendation_comment"] = (
+            "Live market context is unavailable or stale, so the setup should be treated as wait-only until fresh session data is available."
+        )
+        return recommendation
+
     recommendation = _base_recommendation(ctx)
     reasons: list[str] = []
 
