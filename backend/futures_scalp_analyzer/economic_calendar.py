@@ -144,6 +144,7 @@ async def fetch_economic_events(symbol: str) -> dict:
         raw += await _fetch_ff_events(_FF_NEXT_WEEK_URL, timeout)
 
     relevant_today: list[dict] = []
+    seen_events: set[tuple[str, datetime]] = set()
 
     for item in raw:
         if str(item.get("country", "")).upper() != "USD":
@@ -161,6 +162,10 @@ async def fetch_economic_events(symbol: str) -> dict:
         if dt_utc.astimezone(_ET).date() != today_et:
             continue
 
+        event_key = (title, dt_utc)
+        if event_key in seen_events:
+            continue
+        seen_events.add(event_key)
         relevant_today.append({"event": title, "datetime": dt_utc})
 
     relevant_today.sort(key=lambda event: event["datetime"])

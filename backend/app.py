@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import Depends, FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from futures_scalp_analyzer.apex import build_platform_status
+from futures_scalp_analyzer.apex_cache import ApexMarketDataCache
 from futures_scalp_analyzer.apex_dashboard import render_apex_dashboard
 from futures_scalp_analyzer.apex_pipeline import (
     MarketDataProvider,
@@ -36,6 +37,7 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
     app = FastAPI(title="Futures Scalp Analyzer", version="0.1.0")
     app.state.price_feed = price_feed or SchwabQuotePriceFeed()
     app.state.apex_provider = None
+    app.state.apex_cache = ApexMarketDataCache()
 
     def get_price_feed() -> PriceFeed:
         return app.state.price_feed
@@ -85,6 +87,35 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
             return SchwabMarketDataProvider(feed)
         return MockMarketDataProvider()
 
+    def should_use_apex_cache(
+        market_time: datetime | None,
+        news_title: str | None,
+        social_title: str | None,
+    ) -> bool:
+        return market_time is None and news_title is None and social_title is None
+
+    async def build_apex_payload_for_request(
+        symbol: str,
+        feed: PriceFeed,
+        context: dict[str, Any],
+        market_time: datetime | None,
+        news_title: str | None,
+        social_title: str | None,
+    ) -> dict[str, Any]:
+        provider = get_apex_provider(feed)
+        if should_use_apex_cache(market_time, news_title, social_title):
+            return await app.state.apex_cache.get_payload(symbol, provider)
+        return await asyncio.to_thread(
+            build_payload,
+            symbol,
+            provider,
+            None,
+            context,
+            None,
+            True,
+            market_time,
+        )
+
     def apply_apex_risk_state(
         payload: dict[str, Any],
         daily_loss: float,
@@ -106,9 +137,21 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.on_event("startup")
+    async def start_apex_cache() -> None:
+        app.state.apex_cache.start(lambda: get_apex_provider(app.state.price_feed))
+
+    @app.on_event("shutdown")
+    async def stop_apex_cache() -> None:
+        await app.state.apex_cache.stop()
+
     @app.get("/apex/status")
     async def apex_status() -> dict[str, Any]:
         return build_platform_status()
+
+    @app.get("/apex/cache/status")
+    async def apex_cache_status() -> dict[str, Any]:
+        return await app.state.apex_cache.snapshot()
 
     @app.get("/apex/dashboard", response_class=HTMLResponse)
     async def apex_dashboard() -> HTMLResponse:
@@ -131,15 +174,13 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
             "news": [{"title": news_title, "source": "API", "url": ""}] if news_title else [],
             "social": [{"title": social_title, "source": "Truth Social", "url": ""}] if social_title else [],
         }
-        payload = await asyncio.to_thread(
-            build_payload,
+        payload = await build_apex_payload_for_request(
             symbol,
-            get_apex_provider(feed),
-            None,
+            feed,
             context,
-            None,
-            True,
             market_time,
+            news_title,
+            social_title,
         )
         return apply_apex_risk_state(
             payload,
@@ -167,15 +208,13 @@ def create_app(price_feed: PriceFeed | None = None) -> FastAPI:
             "news": [{"title": news_title, "source": "API", "url": ""}] if news_title else [],
             "social": [{"title": social_title, "source": "Truth Social", "url": ""}] if social_title else [],
         }
-        payload = await asyncio.to_thread(
-            build_payload,
+        payload = await build_apex_payload_for_request(
             symbol,
-            get_apex_provider(feed),
-            None,
+            feed,
             context,
-            None,
-            True,
             market_time,
+            news_title,
+            social_title,
         )
         payload = apply_apex_risk_state(
             payload,

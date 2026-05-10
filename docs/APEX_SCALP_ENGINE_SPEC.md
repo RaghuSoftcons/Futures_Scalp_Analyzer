@@ -234,3 +234,28 @@ Run this between Sunday 6:05 PM and 6:15 PM ET after futures reopen:
 - Confirm no Schwab order APIs, Tradovate order APIs, or broker order APIs are called.
 
 Do not close Phase 3 until this live Sunday validation confirms fresh bars, indicators, MTF updates, and Data Gate behavior.
+
+## Backend Market Data Cache / Polling Service
+
+The dashboard must not call Schwab directly. The browser refreshes `/apex/payload/{symbol}` and `/apex/decision/{symbol}`, while Schwab credentials and data access remain server-side.
+
+Phase 3 adds a lightweight in-memory backend cache:
+
+- Normal dashboard/API requests read a cached Apex payload when it is fresh.
+- The backend refreshes active symbols instead of every browser refresh causing a fresh Schwab request burst.
+- Active symbols are tracked when users request them.
+- The polling worker skips Schwab polling during known futures market-closed or maintenance windows.
+- During known closure, the dashboard should continue to show `DATA GATE CLOSED` and the market-session message.
+- For live dashboard paths, mock fallback is disabled so Schwab failures display as unavailable instead of fake live-looking values.
+
+Default cache settings:
+
+- `APEX_POLL_INTERVAL_SECONDS`: default `8`
+- `APEX_CLOSED_POLL_INTERVAL_SECONDS`: default `60`
+- `APEX_ACTIVE_SYMBOL_TTL_SECONDS`: default `600`
+
+Diagnostics:
+
+- `GET /apex/cache/status`
+
+This cache requires no new paid service, subscription, Redis instance, or database in the first version. A shared external cache such as Redis may be considered later only if Railway runs multiple app replicas or multi-user scaling requires it.

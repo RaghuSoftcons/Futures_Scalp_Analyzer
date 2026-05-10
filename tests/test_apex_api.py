@@ -84,6 +84,18 @@ def test_apex_payload_endpoint_includes_required_sections():
     assert body["context"]["context_rule"] == "Display only. Not used in trade decisions."
 
 
+def test_apex_cache_status_endpoint_returns_cache_metadata():
+    response = _client().get("/apex/cache/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "poll_interval_seconds" in body
+    assert "closed_interval_seconds" in body
+    assert "active_symbols" in body
+    assert "cached_symbols" in body
+    assert "cache" in body
+
+
 def test_apex_decision_endpoint_returns_payload_and_decision():
     response = _client().get(f"/apex/decision/NQ?{OPEN_MARKET_QUERY}")
 
