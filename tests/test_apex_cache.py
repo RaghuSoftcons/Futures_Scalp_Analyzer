@@ -62,6 +62,21 @@ def test_cache_snapshot_reports_cached_symbol_and_status():
     assert snapshot["cache"]["NQ"]["data_source"] == "schwab"
 
 
+def test_closed_market_cache_uses_closed_interval_before_refetching_provider(monkeypatch):
+    provider = CountingProvider()
+    cache = ApexMarketDataCache(poll_interval_seconds=0, closed_interval_seconds=60)
+
+    monkeypatch.setattr(
+        "futures_scalp_analyzer.apex_cache.build_market_session",
+        lambda: {"status": "closed"},
+    )
+
+    asyncio.run(cache.get_payload("NQ", provider))
+    asyncio.run(cache.get_payload("NQ", provider))
+
+    assert provider.quote_calls == 1
+
+
 def test_market_session_confirms_sunday_afternoon_is_closed():
     from datetime import datetime
     from zoneinfo import ZoneInfo

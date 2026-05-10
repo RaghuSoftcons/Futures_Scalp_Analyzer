@@ -67,7 +67,7 @@ class ApexMarketDataCache:
         normalized_symbol = _normalize_symbol(symbol)
         await self.mark_active(normalized_symbol)
         cached = await self._get_cached(normalized_symbol)
-        ttl = max_age_seconds or self.poll_interval_seconds
+        ttl = max_age_seconds if max_age_seconds is not None else self._cache_ttl_seconds()
         if cached is not None and _age_seconds(cached.updated_at) <= ttl:
             return deepcopy(cached.payload)
 
@@ -160,6 +160,12 @@ class ApexMarketDataCache:
                 if last_seen >= cutoff
             }
             return sorted(self._active_symbols)
+
+    def _cache_ttl_seconds(self) -> float:
+        session = build_market_session()
+        if session["status"] in {"closed", "maintenance"}:
+            return self.closed_interval_seconds
+        return self.poll_interval_seconds
 
     async def _wait(self, seconds: float) -> None:
         if self._stop_event is None:
