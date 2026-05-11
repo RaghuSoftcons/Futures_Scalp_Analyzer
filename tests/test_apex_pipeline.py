@@ -106,6 +106,36 @@ class MultiTimeframeProvider(MarketDataProvider):
         return _bars_from_closes(self.closes_by_timeframe[timeframe], timestamp=1_800_000_000_000)
 
 
+class RecordingMultiTimeframeProvider(MarketDataProvider):
+    data_source = "schwab"
+
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, int]] = []
+
+    def get_quote(self, symbol: str) -> dict:
+        return {"symbol": symbol, "price": 100.0, "timestamp": CURRENT_TIMESTAMP, "data_source": self.data_source}
+
+    def get_bars(self, symbol: str, timeframe: str, lookback: int) -> list[dict]:
+        del symbol
+        self.requests.append((timeframe, lookback))
+        return _bars_from_closes([float(idx) for idx in range(1, 81)], timestamp=1_800_000_000_000)
+
+
+class NativeThreeMinuteUnavailableProvider(MarketDataProvider):
+    data_source = "schwab"
+
+    def get_quote(self, symbol: str) -> dict:
+        return {"symbol": symbol, "price": 100.0, "timestamp": CURRENT_TIMESTAMP, "data_source": self.data_source}
+
+    def get_bars(self, symbol: str, timeframe: str, lookback: int) -> list[dict]:
+        del symbol, lookback
+        if timeframe == "3m":
+            return []
+        if timeframe == "1m":
+            return _minute_bars_from_closes([float(idx) for idx in range(1, 181)])
+        return _bars_from_closes([float(idx) for idx in range(1, 81)], timestamp=1_800_000_000_000)
+
+
 def _bars_from_closes(closes: list[float], volume: float = 100.0, timestamp=0) -> list[dict]:
     return [
         {
@@ -115,6 +145,21 @@ def _bars_from_closes(closes: list[float], volume: float = 100.0, timestamp=0) -
             "close": close,
             "volume": volume,
             "datetime": timestamp if timestamp else idx,
+        }
+        for idx, close in enumerate(closes)
+    ]
+
+
+def _minute_bars_from_closes(closes: list[float], volume: float = 100.0) -> list[dict]:
+    base_timestamp = 1_800_000_000_000
+    return [
+        {
+            "open": close,
+            "high": close + 0.5,
+            "low": close - 0.5,
+            "close": close,
+            "volume": volume,
+            "datetime": base_timestamp + (idx * 60_000),
         }
         for idx, close in enumerate(closes)
     ]
@@ -357,6 +402,27 @@ def test_timeframe_trend_detection():
     assert classify_timeframe_trend(0.5, 1.0, 2.0, 3.0) == "strong_bearish"
     assert classify_timeframe_trend(2.0, 1.0, 2.0, 3.0) == "bearish"
     assert classify_timeframe_trend(2.0, 3.0, 1.0, 2.0) == "mixed"
+
+
+def test_multi_timeframe_uses_wider_history_for_higher_timeframes():
+    provider = RecordingMultiTimeframeProvider()
+
+    build_multi_timeframe_trend("ES", provider, "schwab", "connected")
+
+    assert ("30m", 10) in provider.requests
+    assert ("15m", 5) in provider.requests
+    assert ("5m", 3) in provider.requests
+
+
+def test_multi_timeframe_builds_three_minute_from_one_minute_when_native_bars_missing():
+    provider = NativeThreeMinuteUnavailableProvider()
+
+    trend = build_multi_timeframe_trend("ES", provider, "schwab", "connected")
+
+    three_minute = trend["timeframes"]["3m"]
+    assert three_minute["is_stale"] is False
+    assert three_minute["ema50"] is not None
+    assert three_minute["price_vs_ema50"] != "unavailable"
 
 
 def test_dominant_trend_bullish_with_three_of_five_timeframes():

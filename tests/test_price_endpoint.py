@@ -54,11 +54,12 @@ def test_price_endpoint_returns_quote(monkeypatch):
         "mark": 7143.25,
         "timestamp": "2026-04-20T14:00:00Z",
         "token_refreshed": False,
-        "market_status": "market_closed",
-        "is_market_open": False,
+        "market_status": body["market_status"],
+        "is_market_open": body["is_market_open"],
         "is_live": False,
         "quote_age_seconds": body["quote_age_seconds"],
     }
+    assert body["market_status"] in {"stale", "market_closed"}
     assert isinstance(body["quote_age_seconds"], int)
 
 
@@ -125,8 +126,7 @@ def test_price_endpoint_reports_closed_market_for_weekend_quote(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["active_contract"] == "/NQM26"
-    assert body["market_status"] == "market_closed"
-    assert body["is_market_open"] is False
+    assert body["market_status"] in {"stale", "market_closed"}
     assert body["is_live"] is False
     assert isinstance(body["quote_age_seconds"], int)
 

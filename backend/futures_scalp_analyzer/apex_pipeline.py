@@ -19,6 +19,13 @@ DATA_GATE_CLOSED = "closed"
 REQUIRED_MARKET_DATA_FIELDS = ("price", "vwap", "ema9", "ema20", "rsi", "trend")
 MULTI_TIMEFRAMES = ("30m", "15m", "5m", "3m", "1m")
 MTF_REQUIRED_BARS = 50
+MTF_LOOKBACK_DAYS = {
+    "30m": 10,
+    "15m": 5,
+    "5m": 3,
+    "3m": 3,
+    "1m": 2,
+}
 EASTERN_TZ = ZoneInfo("America/New_York")
 
 DEFAULT_RISK_SETTINGS: dict[str, float | int] = {
@@ -423,11 +430,7 @@ def build_multi_timeframe_trend(
 ) -> dict[str, Any]:
     timeframes: dict[str, dict[str, Any]] = {}
     for timeframe in MULTI_TIMEFRAMES:
-        try:
-            bars = provider.get_bars(symbol, timeframe, 2)
-            bars = _normalize_bars(bars)
-        except Exception:
-            bars = []
+        bars = _get_multi_timeframe_bars(provider, symbol, timeframe)
         timeframes[timeframe] = build_timeframe_trend(
             timeframe=timeframe,
             bars=bars,
@@ -465,6 +468,62 @@ def build_multi_timeframe_trend(
         "all_timeframes_aligned": all_timeframes_aligned,
         "data_gate_status": data_gate_status,
     }
+
+
+def _get_multi_timeframe_bars(provider: MarketDataProvider, symbol: str, timeframe: str) -> list[dict[str, Any]]:
+    lookback = MTF_LOOKBACK_DAYS.get(timeframe, 2)
+    try:
+        bars = _normalize_bars(provider.get_bars(symbol, timeframe, lookback))
+    except Exception:
+        bars = []
+
+    if timeframe != "3m" or len(bars) >= MTF_REQUIRED_BARS:
+        return bars
+
+    try:
+        one_minute_bars = _normalize_bars(provider.get_bars(symbol, "1m", max(lookback, MTF_LOOKBACK_DAYS["1m"])))
+    except Exception:
+        one_minute_bars = []
+    aggregated_bars = _aggregate_minute_bars(one_minute_bars, 3)
+    if len(aggregated_bars) > len(bars):
+        return aggregated_bars
+    return bars
+
+
+def _aggregate_minute_bars(bars: list[dict[str, Any]], interval_minutes: int) -> list[dict[str, Any]]:
+    valid_bars = []
+    for bar in bars:
+        parsed = _parse_timestamp(bar.get("datetime"))
+        open_price = _to_float(bar.get("open"))
+        high_price = _to_float(bar.get("high"))
+        low_price = _to_float(bar.get("low"))
+        close_price = _to_float(bar.get("close"))
+        if parsed is None or None in {open_price, high_price, low_price, close_price}:
+            continue
+        valid_bars.append((parsed, bar))
+
+    interval_seconds = interval_minutes * 60
+    grouped: dict[int, list[tuple[datetime, dict[str, Any]]]] = {}
+    for parsed, bar in sorted(valid_bars, key=lambda item: item[0]):
+        bucket_start = int(parsed.timestamp() // interval_seconds) * interval_seconds
+        grouped.setdefault(bucket_start, []).append((parsed, bar))
+
+    aggregated: list[dict[str, Any]] = []
+    for bucket_start, group in sorted(grouped.items()):
+        group_bars = [bar for _, bar in group]
+        volumes = [_to_float(bar.get("volume")) for bar in group_bars]
+        aggregated.append(
+            {
+                "timestamp": datetime.fromtimestamp(bucket_start, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+                "datetime": datetime.fromtimestamp(bucket_start, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+                "open": _to_float(group_bars[0].get("open")),
+                "high": max(_to_float(bar.get("high")) for bar in group_bars if _to_float(bar.get("high")) is not None),
+                "low": min(_to_float(bar.get("low")) for bar in group_bars if _to_float(bar.get("low")) is not None),
+                "close": _to_float(group_bars[-1].get("close")),
+                "volume": sum(volume for volume in volumes if volume is not None) if all(volume is not None for volume in volumes) else None,
+            }
+        )
+    return aggregated
 
 
 def build_timeframe_trend(

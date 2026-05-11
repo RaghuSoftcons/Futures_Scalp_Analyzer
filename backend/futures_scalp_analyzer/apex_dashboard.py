@@ -535,6 +535,7 @@ def render_apex_dashboard() -> str:
     function trendMiniClass(value) {{
       const normalized = String(value || "").toLowerCase();
       if (normalized.includes("stale")) return "mini-badge mini-stale";
+      if (normalized.includes("incomplete")) return "mini-badge mini-mixed";
       if (normalized.includes("bullish")) return "mini-badge mini-bullish";
       if (normalized.includes("bearish")) return "mini-badge mini-bearish";
       return "mini-badge mini-mixed";
@@ -557,8 +558,10 @@ def render_apex_dashboard() -> str:
       const isMarketClosed = marketSession.status === "closed" || marketSession.status === "maintenance";
       const rows = order.map((timeframe) => {{
         const row = mtf.timeframes[timeframe] || {{}};
-        const trendText = isMarketClosed ? "Market Closed" : (row.is_stale ? "Stale" : labelize(row.trend));
-        const stackText = isMarketClosed ? "Market Closed" : (row.is_stale ? "Stale" : labelize(row.ema_stack_status));
+        const staleReason = String(row.stale_reason || "").toLowerCase();
+        const unavailableText = staleReason.includes("not enough bars") ? "Incomplete" : "Stale";
+        const trendText = isMarketClosed ? "Market Closed" : (row.is_stale ? unavailableText : labelize(row.trend));
+        const stackText = isMarketClosed ? "Market Closed" : (row.is_stale ? unavailableText : labelize(row.ema_stack_status));
         return `
           <div class="mtf-row">
             <strong>${{timeframe}}</strong>
