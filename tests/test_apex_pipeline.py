@@ -409,7 +409,7 @@ def test_multi_timeframe_uses_wider_history_for_higher_timeframes():
 
     build_multi_timeframe_trend("ES", provider, "schwab", "connected")
 
-    assert ("30m", 10) in provider.requests
+    assert ("30m", 5) in provider.requests
     assert ("15m", 5) in provider.requests
     assert ("5m", 3) in provider.requests
 

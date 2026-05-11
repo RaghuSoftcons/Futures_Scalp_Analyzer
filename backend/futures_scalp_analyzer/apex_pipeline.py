@@ -20,11 +20,11 @@ REQUIRED_MARKET_DATA_FIELDS = ("price", "vwap", "ema9", "ema20", "rsi", "trend")
 MULTI_TIMEFRAMES = ("30m", "15m", "5m", "3m", "1m")
 MTF_REQUIRED_BARS = 50
 MTF_LOOKBACK_DAYS = {
-    "30m": 10,
+    "30m": 5,
     "15m": 5,
     "5m": 3,
     "3m": 3,
-    "1m": 2,
+    "1m": 1,
 }
 EASTERN_TZ = ZoneInfo("America/New_York")
 
@@ -481,7 +481,7 @@ def _get_multi_timeframe_bars(provider: MarketDataProvider, symbol: str, timefra
         return bars
 
     try:
-        one_minute_bars = _normalize_bars(provider.get_bars(symbol, "1m", max(lookback, MTF_LOOKBACK_DAYS["1m"])))
+        one_minute_bars = _normalize_bars(provider.get_bars(symbol, "1m", MTF_LOOKBACK_DAYS["1m"]))
     except Exception:
         one_minute_bars = []
     aggregated_bars = _aggregate_minute_bars(one_minute_bars, 3)
