@@ -7,6 +7,7 @@
 - No order placement.
 - No shared code with any options workflow.
 - Schwab live pricing is read-only and isolated behind a local price-feed interface.
+- Live futures quotes, bars, and active contract metadata are brokered through the companion Railway service `chatgpt-to-schwab-integration`.
 
 ## Run
 
@@ -52,6 +53,12 @@ Example: stale Schwab data with account risk still acceptable returns `risk_stat
 
 Evaluates a futures scalp idea in `idea_eval` mode.
 
+Key response fields include:
+- `requested_side`, `auto_selected`, `evaluated_sides`
+- `top_headlines_detailed` with article `url` values
+- `trump_posts_recent_detailed` with post `url` values
+- `market_data_available`, `verdict`, and stale/closed-session handling fields
+
 ### `POST /futures/position`
 
 Uses the same request schema, forces `mode="position_mgmt"`, and applies flatten-first logic when the position profile becomes asymmetric or daily rules are already hit.
@@ -80,4 +87,5 @@ Uses the same request schema, forces `mode="position_mgmt"`, and applies flatten
 - Supported symbols: `NQ`, `ES`, `CL`, `GC`, `SI`, `ZB`, `UB`
 - Account scaling is implemented by `get_account_risk_template(account_size: int)`.
 - Final recommendation selection is implemented by `compute_final_recommendation(ctx)`.
-- The default `SchwabQuotePriceFeed` is intentionally a local placeholder until a read-only quote bridge is wired into this project.
+- The default `SchwabQuotePriceFeed` is broker-first and uses the read-only Schwab bridge service when `SCHWAB_BROKER_BASE_URL` and `SCHWAB_BROKER_API_KEY` are configured.
+- `/price/{symbol}` distinguishes live and closed-session quotes with `market_status`, `is_market_open`, `is_live`, and `quote_age_seconds`.
