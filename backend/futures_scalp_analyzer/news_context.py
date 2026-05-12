@@ -108,6 +108,7 @@ async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> li
                 pub_date_el = item.find("pubDate")
                 title_el = item.find("title")
                 desc_el = item.find("description")
+                link_el = item.find("link")
                 if pub_date_el is None or title_el is None:
                     continue
                 pub_dt = _parse_feed_datetime(pub_date_el.text or "")
@@ -117,10 +118,12 @@ async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> li
                     continue
                 raw = (desc_el.text if desc_el is not None else None) or (title_el.text or "")
                 text = html.unescape(re.sub(r'<[^>]+>', '', raw)).strip()
+                post_url = (link_el.text or "").strip() if link_el is not None and link_el.text else None
                 if text and len(text) >= 5:
                     posts.append(
                         {
                             "text": text,
+                            "url": post_url or None,
                             "published_at": _isoformat_utc(pub_dt),
                         }
                     )

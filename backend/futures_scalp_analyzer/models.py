@@ -35,6 +35,7 @@ class NewsTimestampedItem(BaseModel):
 
 class TrumpPostItem(NewsTimestampedItem):
     text: str
+    url: str | None = None
 
 
 class NewsHeadlineItem(NewsTimestampedItem):
