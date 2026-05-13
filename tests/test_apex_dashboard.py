@@ -122,4 +122,8 @@ def test_dashboard_route_contains_required_static_contract():
     assert "DATA GATE CLOSED" in body
     assert '"data_gate_status") return String(value).toLowerCase() === "open" ? "DATA GATE OPEN" : "DATA GATE CLOSED"' in body
     assert '"risk_status") return String(value).toLowerCase() === "blocked" ? "RISK GATE CLOSED" : "RISK GATE OPEN"' in body
-    assert "Auto 8s" in body
+    assert "Auto 8s" not in body
+    assert 'name="auto-refresh" value="10"' in body
+    assert 'name="auto-refresh" value="15"' in body
+    assert 'name="auto-refresh" value="30"' in body
+    assert "setInterval(refreshDashboard, seconds * 1000)" in body

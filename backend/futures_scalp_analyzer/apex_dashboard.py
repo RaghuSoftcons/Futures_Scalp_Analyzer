@@ -143,7 +143,7 @@ def render_apex_dashboard() -> str:
     h1 {{ margin: 0 0 8px; font-size: 32px; line-height: 1.1; }}
     .subline {{ color: #b8c6d4; font-size: 16px; }}
     .controls {{ display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }}
-    select, button, label.toggle {{
+    select, button, label.toggle, .refresh-options {{
       min-height: 42px;
       border: 1px solid var(--line);
       background: var(--panel-2);
@@ -154,6 +154,9 @@ def render_apex_dashboard() -> str:
     button {{ cursor: pointer; }}
     button:focus, select:focus, input:focus {{ outline: 2px solid var(--focus); outline-offset: 2px; }}
     label.toggle {{ display: inline-flex; align-items: center; gap: 8px; }}
+    .refresh-options {{ display: inline-flex; align-items: center; gap: 9px; }}
+    .refresh-options legend {{ color: #b8c6d4; font-size: 13px; font-weight: 800; padding: 0 4px; }}
+    .refresh-options label {{ display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }}
     .notice {{
       margin: 18px 0;
       padding: 13px 15px;
@@ -356,7 +359,13 @@ def render_apex_dashboard() -> str:
       <div class="controls">
         <select id="symbol-select" aria-label="Symbol">{symbol_options}</select>
         <button id="refresh-button" type="button">Refresh</button>
-        <label class="toggle"><input id="auto-refresh" type="checkbox"> Auto 8s</label>
+        <fieldset class="refresh-options" aria-label="Auto refresh interval">
+          <legend>Auto</legend>
+          <label><input type="radio" name="auto-refresh" value="0" checked> Off</label>
+          <label><input type="radio" name="auto-refresh" value="10"> 10s</label>
+          <label><input type="radio" name="auto-refresh" value="15"> 15s</label>
+          <label><input type="radio" name="auto-refresh" value="30"> 30s</label>
+        </fieldset>
         <span id="status-line" class="status-message" aria-live="polite"></span>
       </div>
     </section>
@@ -686,11 +695,19 @@ def render_apex_dashboard() -> str:
       }}
     }}
 
+    function setAutoRefresh(seconds) {{
+      if (timer) clearInterval(timer);
+      timer = seconds > 0 ? setInterval(refreshDashboard, seconds * 1000) : null;
+      document.getElementById("status-line").textContent = seconds > 0 ? `Auto ${{seconds}}s` : "";
+      if (seconds > 0) refreshDashboard();
+    }}
+
     document.getElementById("refresh-button").addEventListener("click", refreshDashboard);
     document.getElementById("symbol-select").addEventListener("change", refreshDashboard);
-    document.getElementById("auto-refresh").addEventListener("change", (event) => {{
-      if (timer) clearInterval(timer);
-      timer = event.target.checked ? setInterval(refreshDashboard, 8000) : null;
+    document.querySelectorAll('input[name="auto-refresh"]').forEach((input) => {{
+      input.addEventListener("change", (event) => {{
+        if (event.target.checked) setAutoRefresh(Number(event.target.value || 0));
+      }});
     }});
     refreshDashboard();
   </script>
