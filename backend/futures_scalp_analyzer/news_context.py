@@ -41,6 +41,58 @@ _BEARISH_TERMS = (
 )
 
 
+def _clean_text(raw_value: str | None) -> str:
+    if not raw_value:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", raw_value)
+    text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _ensure_sentence(text: str) -> str:
+    text = text.strip()
+    if not text:
+        return ""
+    if text[-1] in ".!?":
+        return text
+    return f"{text}."
+
+
+def _sentence_preview(raw_value: str | None, *, max_sentences: int = 2, max_chars: int = 420) -> str:
+    text = _clean_text(raw_value)
+    if not text:
+        return ""
+    sentences = [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", text) if sentence.strip()]
+    preview = " ".join(sentences[:max_sentences]) if sentences else text
+    if len(preview) <= max_chars:
+        return preview
+    trimmed = preview[:max_chars].rsplit(" ", 1)[0].rstrip(" ,;:.")
+    return f"{trimmed}..."
+
+
+def _normalized_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _format_linked_preview(text: str | None, url: str | None, *, max_sentences: int = 2) -> str:
+    preview = _sentence_preview(text, max_sentences=max_sentences)
+    if url:
+        return f"{preview} -- {url}" if preview else url
+    return preview
+
+
+def _format_headline_display(item: dict[str, str | None]) -> str:
+    title = _ensure_sentence(_clean_text(item.get("title")))
+    summary = _sentence_preview(item.get("summary"), max_sentences=1)
+    if summary:
+        title_norm = _normalized_text(title)
+        summary_norm = _normalized_text(summary)
+        if summary_norm == title_norm or summary_norm in title_norm or title_norm in summary_norm:
+            summary = ""
+    body = " ".join(part for part in (title, summary) if part).strip()
+    return _format_linked_preview(body, item.get("url"), max_sentences=2)
+
+
 def _default_news_context() -> dict:
     return {
         "news_bias": "neutral",
@@ -117,7 +169,7 @@ async def _fetch_trump_posts_rss(cutoff: datetime, timeout: httpx.Timeout) -> li
                 if pub_dt < cutoff:
                     continue
                 raw = (desc_el.text if desc_el is not None else None) or (title_el.text or "")
-                text = html.unescape(re.sub(r'<[^>]+>', '', raw)).strip()
+                text = _clean_text(raw)
                 post_url = (link_el.text or "").strip() if link_el is not None and link_el.text else None
                 if text and len(text) >= 5:
                     posts.append(
@@ -153,8 +205,8 @@ def _is_article_url(url: str) -> bool:
 async def _fetch_headlines_rss(cutoff: datetime, timeout: httpx.Timeout) -> list[dict[str, str | None]]:
     """Fetch top market-moving headlines with article URLs.
 
-    Each entry is formatted as: "Headline title -- https://article-url"
-    so the GPT can display the title and a clickable link to read more.
+    Each entry keeps title, summary and URL so the GPT can display one or two
+    useful sentences before the link.
     """
     headlines: list[dict[str, str | None]] = []
     for feed_url in _NEWS_RSS_FEEDS:
@@ -183,9 +235,17 @@ async def _fetch_headlines_rss(cutoff: datetime, timeout: httpx.Timeout) -> list
                     title_el = item.find("title")
                     if title_el is None:
                         continue
-                    title_text = html.unescape(re.sub(r'<[^>]+>', '', title_el.text or "")).strip()
+                    title_text = _clean_text(title_el.text)
                     if not title_text or len(title_text) < 5:
                         continue
+                    summary_el = item.find("description")
+                    if summary_el is None:
+                        summary_el = item.find("summary")
+                    if summary_el is None:
+                        summary_el = item.find("{http://purl.org/rss/1.0/modules/content/}encoded")
+                    if summary_el is None:
+                        summary_el = item.find("{http://www.w3.org/2005/Atom}summary")
+                    summary_text = _sentence_preview(summary_el.text if summary_el is not None else None, max_sentences=2)
                     # Extract article URL - try <link> first, then <guid> as fallback
                     article_url = ""
                     link_el = item.find("link")
@@ -202,13 +262,16 @@ async def _fetch_headlines_rss(cutoff: datetime, timeout: httpx.Timeout) -> list
                             if is_perma and _is_article_url(candidate):
                                 article_url = candidate
                     # Check pubDate freshness
-                    pub_date_el = item.find("pubDate") or item.find("published")
+                    pub_date_el = item.find("pubDate")
+                    if pub_date_el is None:
+                        pub_date_el = item.find("published")
                     pub_dt = _parse_feed_datetime(pub_date_el.text) if pub_date_el is not None and pub_date_el.text else None
                     if pub_dt is not None and pub_dt < cutoff:
                         continue
                     headlines.append(
                         {
                             "title": title_text,
+                            "summary": summary_text,
                             "url": article_url or None,
                             "published_at": _isoformat_utc(pub_dt),
                         }
@@ -230,13 +293,21 @@ async def get_news_context(timeout: httpx.Timeout | None = None) -> dict:
 
     trump_posts_detailed = await _fetch_trump_posts_rss(trump_cutoff, timeout)
     top_headlines_detailed = await _fetch_headlines_rss(news_cutoff, timeout)
-    trump_posts = [str(post.get("text", "")) for post in trump_posts_detailed]
+    trump_post_texts = [str(post.get("text", "")) for post in trump_posts_detailed]
+    trump_posts = [
+        _format_linked_preview(str(post.get("text", "")), post.get("url"), max_sentences=2)
+        for post in trump_posts_detailed
+    ]
+    headline_corpus = [
+        " ".join(part for part in (str(item.get("title", "")), str(item.get("summary", ""))) if part)
+        for item in top_headlines_detailed
+    ]
     top_headlines = [
-        f"{item['title']} -- {item['url']}" if item.get("url") else str(item["title"])
+        _format_headline_display(item)
         for item in top_headlines_detailed
     ]
 
-    news_bias, news_bias_note = _infer_news_bias(top_headlines, trump_posts)
+    news_bias, news_bias_note = _infer_news_bias(headline_corpus, trump_post_texts)
     context.update(
         {
             "news_bias": news_bias,

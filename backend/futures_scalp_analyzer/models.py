@@ -40,6 +40,7 @@ class TrumpPostItem(NewsTimestampedItem):
 
 class NewsHeadlineItem(NewsTimestampedItem):
     title: str
+    summary: str = ""
     url: str | None = None
 
 
